@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   15:05, 18 Aug 2026
+#   Last Revised:   15:30, 18 Aug 2026
 #
 
 set -e
@@ -389,7 +389,7 @@ tsecho "Creating env at ${GCOL}${SPACKLOT_ENV_BUILD}$DCOL"
 
 # All spack needs for an env is a directory with spack.yaml
 mkdir -p $SPACKLOT_ENV_BUILD/logs
-cp clusters/$SPACKLOT_DEPLOYMENT_NAME/spack.yaml $SPACKLOT_ENV_BUILD
+cp $cluster_dir/spack.yaml $SPACKLOT_ENV_BUILD
 cp -r src/build/* $SPACKLOT_ENV_BUILD
 
 cat > $SPACKLOT_ENV_BUILD/main.cfg << EOF
@@ -415,8 +415,8 @@ fi
 
 # Copy components that may be optional
 for component in packages.cfg templates postprocess includes; do
-    if [[ -e clusters/$SPACK_DEPLOYMENT_NAME/$component ]]; then
-        cp -r -L clusters/$SPACKLOT_DEPLOYMENT_NAME/$component $SPACKLOT_ENV_BUILD
+    if [[ -e $cluster_dir/$component ]]; then
+        cp -r -L $cluster_dir/$component $SPACKLOT_ENV_BUILD
     else
         tsecho " -> Skipping optional component $PCOL$component$DCOL"
     fi
@@ -445,8 +445,8 @@ tsecho "Set bookstrap location to ${GCOL}${SPACKLOT_ROOT_BOOTSTRAP}$DCOL"
 spack bootstrap root $SPACKLOT_ROOT_BOOTSTRAP
 
 # Add package constraints from initial config file
-if [[ -f clusters/$SPACKLOT_DEPLOYMENT_NAME/constraints.cfg ]]; then
-    cp clusters/$SPACKLOT_DEPLOYMENT_NAME/constraints.cfg $SPACKLOT_ENV_BUILD
+if [[ -f $cluster_dir/constraints.cfg ]]; then
+    cp $cluster_dir/constraints.cfg $SPACKLOT_ENV_BUILD
 
     if [[ ! $skip_steps =~ " "(constraints|all)" "  ]]; then
         tsecho "Setting package constraints"
@@ -508,10 +508,10 @@ if [[ ! $skip_steps =~ " "(mirrors|all)" "  ]]; then
 fi
 
 # Add custom repos
-if [[ -f clusters/$SPACKLOT_DEPLOYMENT_NAME/repos.cfg ]]; then
+if [[ -f $cluster_dir/repos.cfg ]]; then
     while read -r repo; do
         spack repo add $repo
-    done < clusters/$SPACKLOT_DEPLOYMENT_NAME/repos.cfg
+    done < $cluster_dir/repos.cfg
 fi
 
 # Add module templates
