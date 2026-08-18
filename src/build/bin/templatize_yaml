@@ -1,0 +1,43 @@
+#!/bin/bash
+
+function usage {
+cat << EOF
+Usage: $0
+
+Use this script to strip this environment's spack.yaml down to essential
+settings worth propagating to a new version of the deployment. Things like
+specs, externals, and view packages are removed.
+
+The resulting template will be created in \$SPACK_ENV/template/yaml.
+
+Options
+    -h, --help              show this help message
+
+EOF
+exit
+}
+
+if [[ " $@ " == *" -h "* ]] || [[ " $@ " == *" --help "* ]]; then
+    usage
+fi
+
+# Perform common script setup including environment checks
+export my_dir="$( cd "$(dirname "$0")" ; pwd )"
+. $my_dir/tools/init.sh
+
+# Make sure environment is exported for Python
+export SPACKLOT_CLUSTER SPACKLOT_CLUSTER_VERSION SPACKLOT_TMPROOT
+
+# Run the main code using Spack's Python
+spack python $my_dir/tools/templatize_yaml.py
+
+if [[ $? == 0 ]]; then
+    tsecho "YAML template generated in $SPACK_ENV/templates/yaml"
+else
+    tsecho "Error: YAML template could not be created"
+fi
+
+# Filter out any remaining references to the deployed build env
+for yaml_file in $(find $SPACK_ENV/templates/yaml -name "*.yaml"); do
+    sed -i "s|$SPACK_ENV|%BASEROOT%|" $yaml_file
+done

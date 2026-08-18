@@ -1,0 +1,160 @@
+#!/bin/bash
+#
+#   This script runs postprocessing "units" defined in the postprocess
+#   subdirectory of the build environment.
+#
+#   Author:         Brian Vanderwende
+#   Last Revised:   14:54, 29 Jun 2026
+#
+
+function usage {
+cat << EOF
+Usage: $0 [OPTIONS]
+
+Use this script to run postprocessing steps (units) which modify the specified
+environment (build by default) beyond what Spack can do. All units are specified
+in the $SPACK_ENV/postprocess subdirectory.
+
+In general, units will be run in alphabetical order. You can prioritize a unit by
+prefixing with a number - e.g., 01.unit.
+
+You can also restrict a unit to only run for build or public environments by
+appending the environment type at the end - e.g., unit.public. It is also
+possible to define a unit that only provides shared helper functions by
+appending "helper" at the end instead of an environment type. Such a unit will
+not be run by this script.
+
+If you wish to operate on a specific environment, specify the variable
+SPACKLOT_ENV_TYPE when calling this script. For example:
+
+    SPACKLOT_ENV_TYPE=public bin/postprocess
+
+Options
+    -h, --help              show this help message
+    -l, --list              list all currently defined units for the environment
+    -u, --units [LIST]      only run the units in this comma-delimited list
+    -v, --verbose           provide additional logging messages
+
+EOF
+exit
+}
+
+if [[ " $@ " == *" -h "* ]] || [[ " $@ " == *" --help "* ]]; then
+    usage
+fi
+
+# Perform common script setup including environment checks
+export my_dir="$( cd "$(dirname "$0")" ; pwd )"
+. $my_dir/tools/init.sh
+
+# Create a temporary file for use in all units
+export TMP_FILE=$SPACK_ENV/.tmp.$$
+
+if [[ ${SPACKLOT_ENV_TYPE:=build} == public ]]; then
+    export MOD_ROOT=$SPACKLOT_ROOT_MODULES
+    export BASE_ROOT=$SPACKLOT_ROOT_BASE
+else
+    export MOD_ROOT=$SPACK_ENV/modules
+    export BASE_ROOT=$SPACK_ENV
+fi
+
+export MOD_DEPLOYMENT=$MOD_ROOT/$SPACKLOT_CLUSTER_VERSION
+export POSTPROCESS_UNIT_DIR=$SPACK_ENV/postprocess
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -l|--list)
+            skip_execution=true
+            ;;
+        -u|--units)
+            if [[ $1 == *=* ]]; then
+                unit_list=($(tr ',' ' ' <<< ${1#*=}))
+            else
+                unit_list=($(tr ',' ' ' <<< $2))
+                shift
+            fi
+            ;;
+        -v|--verbose)
+            export log_verbosity=$((log_verbosity + 1))
+            ;;
+    esac
+
+    shift
+done
+
+log_dir=$SPACK_ENV/logs
+mkdir -p $log_dir $SPACK_ENV/util
+log_file=$log_dir/postprocess.$start_time
+
+if [[ ${skip_execution:-false} != true ]]; then
+    # Make sure config variables are available to our units
+    for cfg_var in ${!SPACKLOT_*}; do
+        export $cfg_var
+    done
+
+    if [[ -n $SPACKLOT_ROOT_MODULES ]]; then
+        # First, let's make sure module tree exists
+        if [[ ! -d $MOD_DEPLOYMENT ]]; then
+            spack module lmod refresh $SPACKLOT_MODULE_FLAGS -y |& grep -v "LMod hierarchy"
+        fi
+    fi
+fi
+
+#
+##  MAIN UNIT EXECUTION
+#
+
+if [[ -d $POSTPROCESS_UNIT_DIR ]]; then
+    cd $POSTPROCESS_UNIT_DIR
+else
+    tsecho "No postprocessing units found. Skipping"
+    exit
+fi
+
+if [[ -z $unit_list ]]; then
+    if [[ $SPACKLOT_ENV_TYPE == build ]]; then
+        env_filter=public
+    else
+        env_filter=build
+    fi
+
+    unit_list=$(ls --color=never -1 | xargs)
+fi
+
+if [[ $skip_execution == true ]]; then
+    for unit in $unit_list; do
+        if [[ $unit != *.helper ]] && [[ $unit != *.$env_filter ]]; then
+            tsecho "Detected postprocessing unit $PCOL$unit$DCOL; skipping execution"
+        fi
+    done
+else
+    for unit in $unit_list; do
+        if [[ $unit != *.helper ]] && [[ $unit != *.$env_filter ]]; then
+            tsecho "Running postprocessing unit $GCOL$unit$DCOL" |& tee -a $log_file
+
+            if [[ -f $unit.$SPACKLOT_ENV_TYPE ]]; then
+                UNIT_NAME=$unit bash $unit.$SPACKLOT_ENV_TYPE |& tee -a $log_file
+            elif [[ -f $unit ]]; then
+                UNIT_NAME=$unit bash $unit |& tee -a $log_file
+            else
+                tsecho "Error: postprocess unit $unit not found in $SPACKLOT_ENV_TYPE deployment"
+                exit
+            fi
+        fi
+    done
+fi
+
+# Clean colors from log file
+if [[ -f $log_file ]]; then
+    for color_code in $COLOR_LIST; do
+        perl -p -i -e "s/\Q\$ENV{$color_code}//g" $log_file
+    done
+fi
+
+update_log_pointers postprocess
+
+tsecho "Postprocessing complete"

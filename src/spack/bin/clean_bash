@@ -1,0 +1,60 @@
+#!/bin/bash
+
+env_args=( SPACK_DISABLE_LOCAL_CONFIG=true )
+my_dir="$( cd "$(dirname "$0")" ; pwd )"
+SPACKLOT_ROOT=$(readlink -f $my_dir/..)
+my_owner=$(stat -c '%U' $SPACKLOT_ROOT)
+current_user=$(whoami)
+
+if [[ ! -f $SPACKLOT_ROOT/bin/spack ]]; then
+    >&2 echo "Error: script is not installed into a Spack clone"
+    exit 1
+fi
+
+if [[ $my_owner != $current_user ]]; then
+    >&2 echo "Warning: Current user ($current_user) is not the owner ($my_owner) of this deployment!"
+    read -e -p "Proceed (y/N)? " ignore_owner
+    ignore_owner=${ignore_owner:=no}
+
+    if [[ YES != ${ignore_owner^^}* ]]; then
+        exit 1
+    fi
+fi
+
+if [[ -e /etc/bash.bashrc.local ]]; then
+    >&2 echo "Warning: /etc/bash.bashrc.local exists, which may contaminate environment..."
+fi
+
+SPACKLOT_STARTUP=$SPACKLOT_ROOT/share/spack/setup-env.sh
+SPACKLOT_MAIN=
+
+# Pull in main cluster config if set
+if [[ -f $SPACKLOT_MAIN ]]; then
+    . $SPACKLOT_MAIN
+fi
+
+SHELL_INIT="/bin/bash --noprofile"
+
+if [[ $# -eq 0 ]]; then
+    env_args+=( PS1="\[\e[1;34m\][clean]\[\e[0m\] ${SPACKLOT_PROMPT:-\W$ }" )
+    SHELL_INIT="$SHELL_INIT --rcfile $SPACKLOT_ROOT/share/spacklot/init.sh"
+else
+    SHELL_INIT="BASH_ENV=$SPACKLOT_ROOT/share/spacklot/init.sh $SHELL_INIT --norc"
+fi
+
+env_args+=( PATH=/usr/local/bin:/usr/bin:/bin )
+
+for pass_vars in USER SUDO_USER HOME TERM SPACK_SYSTEM_CONFIG_PATH ${!SPACKLOT_*} LS_COLORS TMPDIR ${!GIT_*} SPACK_PYTHON VIMINIT; do
+    if [[ -n ${!pass_vars} ]]; then
+        env_args+=( $pass_vars="${!pass_vars}" )
+    fi
+done
+
+# Ensure no ~/.spack contamination
+if [[ -d ~/.spack ]]; then
+    backup_root=/home/$current_user/.spack-backups
+    mkdir -p $backup_root
+    mv ~/.spack $backup_root/$(date +%y%m%d-%H%M%S)
+fi
+
+exec env -i "${env_args[@]}" $SHELL_INIT "$@"

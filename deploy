@@ -1,0 +1,589 @@
+#!/bin/bash
+#
+#   Author:         Brian Vanderwende
+#   Last Revised:   21:04, 17 Aug 2026
+#
+
+set -e
+export SPACKLOT_DIR="$( cd "$(dirname "$0")" ; pwd )"
+export SPACKLOT_DEPLOYMENT_TIME=$(date +%y%m%dT%H%M)
+export SPACKLOT_DEPLOYMENT_TYPE=testing
+export SPACK_DISABLE_LOCAL_CONFIG=true
+
+# Source functions from init script, but skip environment activation
+SPACKLOT_SETUP_DEPLOY=1 . $SPACKLOT_DIR/src/build/bin/tools/init.sh
+
+function usage {
+cat << EOF
+Usage: $0 [OPTIONS] CLUSTER
+
+This script is used to deploy a new Spack software stack based on a specified
+cluster definition. A "build" environment will be created, and by default all
+packages defined in the cluster's manifest will be built. Publishing will not
+be done by this script.
+
+Options
+    -h, --help                  show this help message
+    -b, --branch REF            override the branch of the Spack fork to use
+    -c, --config NAME           uses config from config/NAME.cfg (default = deploy)
+    -k, --key OPTION            determines behavior for GPG keys. options include:
+                                    auto    - generate if not found at normal path
+                                    PATH    - specify the path to a private GPG key
+                                    new     - force generation of a new key
+                                    none    - don't generate or import keys
+    -p, --production            create a production deployment (must be prod user)
+    -r, --repo REF              override the branch of the packages fork to use
+    -s, --skip STEP1[,STEP2]        skip specified step of deployment process
+                                    all         - skip all of the above
+                                    constraints - don't add constraints
+                                    keys        - don't set up GPG keys
+                                    mirrors     - don't set up local+global mirrors
+                                    packages    - don't install anything into build
+                                    repos       - don't set up package repos
+    --share-packages PATH       use builtin packages repo at the following path
+                                (package repo must be owned by current user)
+    --set-version VERSION       override version set in cluster definition
+
+EOF
+exit ${1:-0}
+}
+
+function export_gpg_key {
+    echo
+    tsecho "Exporting new GPG key to $SPACKLOT_KEY_DIRECTORY ..."
+    spack gpg export $SPACKLOT_KEY_DIRECTORY/${key_user}-key.pub
+    spack gpg export --secret $SPACKLOT_KEY_DIRECTORY/${key_user}-key.priv
+    chmod 640 $SPACKLOT_KEY_DIRECTORY/${key_user}-key.*
+    echo
+}
+
+#
+## ---- INITIALIZATION ----
+#
+
+# Handle arguments
+user_args=( "$@" )
+gpg_opt=auto
+key_user=$(whoami)
+
+while [[ $# -gt 0 ]]; do
+    key="$1"
+
+    case $key in
+        -h|--help)
+            usage
+            ;;
+        -b|--branch)
+            custom_branch=$2
+            shift
+            ;;
+        -c|--config)
+            spacklot_config="${2:-deploy}"
+            ;;
+        -k|--key)
+            gpg_opt=$2
+            shift
+            ;;
+        -p|--production)
+            SPACKLOT_DEPLOYMENT_TYPE=production
+            ;;
+        -r|--repo)
+            custom_repo=$2
+            shift
+            ;;
+        -s|--skip)
+            if [[ $1 == *=* ]]; then
+                skip_steps=${1#*=}
+            else
+                skip_steps=$2
+                shift
+            fi
+
+            skip_steps=" $(tr ',' ' ' <<< $skip_steps) "
+            ;;
+        --set-version)
+            custom_version=$2
+
+            if [[ -n $custom_version ]]; then
+                tmp_file_path=$(mktemp ${TMPDIR:-/tmp}/ns-cluster.XXXXXXXX)
+                shift
+            else
+                tsecho "Error: --set-version requires an argument"
+                usage 1
+            fi
+            ;;
+        --share-packages)
+            packages_path=$2
+
+            if [[ ! -f $packages_path/repos/spack_repo/builtin/repo.yaml ]]; then
+                tsecho "Error: path given for existing builtin is not a repo directory"
+                exit 1
+            else
+                pkg_repo_owner=$(stat -c '%U' $packages_path)
+
+                if [[ $(whoami) != $pkg_repo_owner ]]; then
+                    tsecho "Error: shared package repo must be owned by current user"
+                    exit 1
+                fi
+            fi
+            ;;
+        -*)
+            tsecho "Error: unrecognized option $key"
+            usage 1
+            ;;
+        *)
+            export SPACKLOT_DEPLOYMENT_NAME=$1
+            ;;
+    esac
+
+    shift
+done
+
+# Source specified config
+. $SPACKLOT_DIR/cfg/${spacklot_config}.cfg
+export SPACKLOT_PRODUCTION_USER
+
+if [[ $SPACKLOT_DEPLOYMENT_TYPE == production ]]; then
+    if [[ $key_user != $SPACKLOT_PRODUCTION_USER ]]; then
+        tsecho "Error: cannot create production deployment as $my_user"
+        exit 1
+    fi
+fi
+
+if [[ -z $SPACKLOT_DEPLOYMENT_NAME ]]; then
+    tsecho "Error: deployment configuration must be specified"
+    usage 1
+elif [[ ! -f $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/main.cfg ]]; then
+    tsecho "Error: deployment "$SPACKLOT_DEPLOYMENT_NAME" not recognized from available options"
+    exit 1
+fi
+
+if [[ -n $packages_path ]] && [[ -n $custom_repo ]]; then
+    tsecho "Error: cannot specify both --repo and --share-packages"
+    usage 1
+fi
+
+# Source cluster settings
+if [[ -n $tmp_file_path ]]; then
+    settings_file=$tmp_file_path
+    sed "s/\(SPACKLOT_CLUSTER_VERSION=\).*/\1${custom_version}/" \
+        $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/main.cfg > $settings_file
+else
+    settings_file=$SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/main.cfg
+fi
+
+. $settings_file
+
+# Check if Github repo exists
+if [[ -n $SPACKLOT_GITHUB ]] && [[ $skip_github != yes ]]; then
+    tsecho "Checking status of $SPACKLOT_GITHUB"
+    
+    if ! git ls-remote -h "$SPACKLOT_GITHUB" > /dev/null; then
+        exit 1
+    fi
+fi
+
+# Check key status
+if [[ ! $gpg_opt =~ (auto|new|none) ]]; then
+    if [[ ! -f $gpg_opt ]]; then
+        tsecho "Error: No GPG key found at ${gpg_opt}.\n       Check input and try again."
+        exit 1
+    else
+        gpg_key=$gpg_opt
+    fi
+elif [[ $gpg_opt == auto ]]; then
+    if [[ -f $SPACKLOT_KEY_DIRECTORY/${key_user}-key.priv ]]; then
+        gpg_key=$SPACKLOT_KEY_DIRECTORY/${key_user}-key.priv
+    else
+        gpg_opt=new
+    fi
+fi
+
+# Ensure no ~/.spack contamination
+if [[ -d ~/.spack ]]; then
+    tsecho "Moving ~/.spack to ~/.spack-backups to avoid contamination"
+
+    backup_root=~/.spack-backups
+    mkdir -p $backup_root
+    mv ~/.spack $backup_root/$(date +%y%m%d-%H%M%S)
+fi
+
+#
+## ---- INSTALL/CLONE SPACK FOR CLUSTER ----
+#
+
+spack_clone_path=$SPACKLOT_ROOT_DEPLOYMENT/spack
+
+if [[ $SPACKLOT_ROOT != $spack_clone_path ]]; then 
+    if [[ -d $SPACKLOT_ROOT_DEPLOYMENT ]]; then
+        tsecho "Error:  Existing deployment found at ${SPACKLOT_ROOT_DEPLOYMENT}. Will not\n        overwrite. Resolve and rerun this script."
+        exit 1
+    fi
+
+    # Install latest source from GitHub and checkout specified version
+    tsecho "Installing Spack into ${GCOL}$spack_clone_path${DCOL}"
+    git clone -c feature.manyFiles=true ${SPACKLOT_DEFAULT_FORK:=https://github.com/spack/spack.git} $spack_clone_path
+    echo
+    cd $spack_clone_path
+
+    if [[ -n $custom_branch ]]; then
+        SPACKLOT_CUSTOM_BRANCH=$custom_branch
+    fi
+
+    if [[ -n $SPACKLOT_CUSTOM_BRANCH ]]; then
+        tsecho " ==> Switching to custom branch ${PCOL}${SPACKLOT_CUSTOM_BRANCH}$DCOL"
+        git checkout $SPACKLOT_CUSTOM_BRANCH
+        echo
+    elif git branch -r | grep -q /$SPACKLOT_CLUSTER_VERSION; then
+        tsecho " ==> Switching to existing version branch ${PCOL}${SPACKLOT_CLUSTER_VERSION}$DCOL"
+        git checkout $SPACKLOT_CLUSTER_VERSION
+        echo
+    fi
+
+    # Add original Spack repo as an upstream for checking out recipe updates
+    if [[ $SPACKLOT_DEFAULT_FORK != https://github.com/spack/spack.git ]]; then
+        git remote add upstream https://github.com/spack/spack.git
+    fi
+
+    # Copy our scripts into the clone
+    cp -r $SPACKLOT_DIR/src/spack/* $spack_clone_path
+
+    # Set prompt label in clean_bash script
+    if [[ -f $spack_clone_path/bin/clean_bash ]]; then
+        sed -i "s/\[clean\]/\[${SPACKLOT_CLUSTER}-${SPACKLOT_CLUSTER_VERSION}\]/" $spack_clone_path/bin/clean_bash
+
+        # If exists, use Spack utils repo for Python
+        if [[ -d $SPACKLOT_PYTHON_ROOT ]]; then
+            sed -i "s|^\(SPACKLOT_PYTHON_ROOT=\).*|\1$SPACKLOT_PYTHON_ROOT|" $spack_clone_path/share/spacklot/init.sh
+        fi
+
+        if [[ -n $SPACKLOT_SPACK_PYDIR ]]; then
+            sed -i "/^env_args=/a SPACKLOT_SPACK_PYDIR=$SPACKLOT_SPACK_PYDIR" $spack_clone_path/bin/clean_bash
+        fi
+    fi
+
+    # Add custom cluster source files if found
+    if [[ -d $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/src/spack ]]; then
+        cp -r $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/src/spack/* $spack_clone_path/
+    fi
+
+    # Copy any found licenses to Spack install
+    if [[ -d $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/licenses ]]; then
+        cp -rL $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/licenses $spack_clone_path/etc/spack/
+    fi
+
+    # Modify permissions
+    chmod -R a=rX,u+w $spack_clone_path
+
+    # Activate spack installation
+    . $spack_clone_path/share/spack/setup-env.sh
+
+    # Pull builtin package repo
+    if [[ ! $skip_steps =~ " "(repos|all)" " ]]; then
+        if [[ -n $packages_path ]]; then
+            tsecho "Linking existing builtin repo into deployment"
+            ln -s $packages_path $SPACKLOT_ROOT_PACKAGES
+
+            if [[ -n $SPACKLOT_PACKAGES_BRANCH ]]; then
+                tsecho " ==> Ignoring branch specified in config file since we are using existing repo"
+            fi
+        else
+            tsecho "Pulling builtin package repo into Spack clone"
+            git clone ${SPACKLOT_DEFAULT_PACKAGES_FORK:=https://github.com/spack/spack-packages.git} $SPACKLOT_ROOT_PACKAGES
+            cd $SPACKLOT_ROOT_PACKAGES
+            git remote set-url origin $SPACKLOT_DEFAULT_PACKAGES_FORK
+
+            if [[ $SPACKLOT_DEFAULT_PACKAGES_FORK != https://github.com/spack/spack-packages.git ]]; then
+                git remote add upstream https://github.com/spack/spack-packages.git
+            fi
+            echo
+        
+            if [[ -n $custom_repo ]]; then
+                SPACKLOT_PACKAGES_BRANCH=$custom_repo
+            fi
+        
+            if [[ -n $SPACKLOT_PACKAGES_BRANCH ]]; then
+                echo
+                tsecho " ==> Switching to packages repo branch ${PCOL}${SPACKLOT_PACKAGES_BRANCH}$DCOL"
+                git fetch
+                git checkout origin/$SPACKLOT_PACKAGES_BRANCH
+                echo
+            fi
+        fi
+        
+        cd - > /dev/null
+        spack repo add $SPACKLOT_ROOT_PACKAGES/repos/spack_repo/builtin
+    fi
+
+    # Create trusted GPG key in spack install
+    if [[ ! $skip_steps =~ " "(keys|all)" "  ]]; then
+        if [[ $gpg_opt == new ]]; then
+            if [[ $key_user == $SPACKLOT_PRODUCTION_USER ]]; then
+                key_person="$SPACKLOT_PRODUCTION_USER_NAME"
+                key_email=$SPACKLOT_PRODUCTION_USER_EMAIL
+            else
+                key_person="$(getent passwd $key_user | awk -F[,:] '{ print $5 }')"
+                key_email=$SPACKLOT_USER_EMAIL
+            fi
+
+            tsecho "Creating trusted GPG key for build cache creation"
+            spack gpg create "${key_person:-$key_user}" "<${key_email:-$(printf "%s@%s" $key_user $(hostname -f))}>"
+
+            if [[ -f $SPACKLOT_KEY_DIRECTORY/${key_user}-key.priv ]]; then
+                read -p "GPG key already exists. Overwrite (y/N)? " clobber_key
+                clobber_key=${clobber_key:-no}
+
+                if [[ yes == ${clobber_key,,}* ]]; then
+                    echo "Backing up old key ..."
+                    mkdir $SPACKLOT_KEY_DIRECTORY/backup.$SPACKLOT_DEPLOYMENT_TIME
+                    mv $SPACKLOT_KEY_DIRECTORY/${key_user}-key.* $SPACKLOT_KEY_DIRECTORY/backup.$SPACKLOT_DEPLOYMENT_TIME
+                    export_gpg_key
+                fi
+            else
+                mkdir -p $SPACKLOT_KEY_DIRECTORY
+                export_gpg_key
+            fi
+        elif [[ -n $gpg_key ]]; then
+            tsecho "Trusting existing GPG key"
+            spack gpg trust $gpg_key
+            echo
+        fi
+    fi
+
+    tsecho "Activating new spack installation"
+    
+    # Make sure environment is clean
+    cd $SPACKLOT_DIR
+    $spack_clone_path/bin/clean_bash $0 "${user_args[@]}"
+    exit $?
+else
+    # Activate spack installation
+    . $SPACKLOT_STARTUP
+fi
+
+#
+## ---- CREATE AND CUSTOMIZE ENV ----
+#
+
+if [[ -d $SPACKLOT_ENV_BUILD ]]; then
+>&2 cat << EOF
+Error:  Existing environment found at ${SPACKLOT_ENV_BUILD}. Will not
+        overwrite. Resolve and rerun this script.
+
+EOF
+exit 1
+fi
+
+tsecho "Creating env at ${GCOL}${SPACKLOT_ENV_BUILD}$DCOL"
+
+# All spack needs for an env is a directory with spack.yaml
+mkdir -p $SPACKLOT_ENV_BUILD/logs
+cp clusters/$SPACKLOT_DEPLOYMENT_NAME/spack.yaml $SPACKLOT_ENV_BUILD
+cp -r src/build/* $SPACKLOT_ENV_BUILD
+
+cat > $SPACKLOT_ENV_BUILD/main.cfg << EOF
+SPACKLOT_DEPLOYMENT_TYPE=$SPACKLOT_DEPLOYMENT_TYPE
+SPACKLOT_DEPLOYMENT_COMMIT=$(git rev-parse HEAD)
+SPACKLOT_SPEC_FORMAT=$SPACKLOT_SPEC_FORMAT
+SPACKLOT_PRODUCTION_USER=$SPACKLOT_PRODUCTION_USER
+
+EOF
+
+envsubst '$USER,$SPACKLOT_DEPLOYMENT_NAME' < $settings_file >> $SPACKLOT_ENV_BUILD/main.cfg
+
+if [[ -n $tmp_file_path ]]; then
+    rm -f $tmp_file_path
+fi
+
+sed -i "s|^\(SPACKLOT_MAIN=\)$|\1$SPACKLOT_ENV_BUILD/main.cfg|" $spack_clone_path/bin/clean_bash
+
+# Override the normal version if set at the command-line
+if [[ -n $custom_version ]]; then
+    sed -i "s/\(SPACKLOT_CLUSTER_VERSION=\).*/\1${custom_version}/" $SPACKLOT_ENV_BUILD/main.cfg
+fi
+
+cp clusters/$QSYS/packages.cfg $SPACKLOT_ENV_BUILD
+cp -r templates $SPACKLOT_ENV_BUILD
+
+if [[ -d clusters/$SPACKLOT_DEPLOYMENT_NAME/templates ]]; then
+    cp -r clusters/$SPACKLOT_DEPLOYMENT_NAME/templates $SPACKLOT_ENV_BUILD
+fi
+
+if [[ -e clusters/$SPACKLOT_DEPLOYMENT_NAME/postprocess ]]; then
+    cp -r -L clusters/$SPACKLOT_DEPLOYMENT_NAME/postprocess $SPACKLOT_ENV_BUILD
+fi
+
+# Copy any YAML includes
+if [[ -d $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/includes ]]; then
+    cp -r -L $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/includes $SPACKLOT_ENV_BUILD
+fi
+
+# Make cluster-specific substitutions in YAML FILES
+for yaml_file in $SPACKLOT_ENV_BUILD/spack.yaml $(ls $SPACKLOT_ENV_BUILD/includes/* 2> /dev/null); do
+    sed -i "s|%HOST%|$SPACKLOT_CLUSTER|" $yaml_file
+    sed -i "s|%VERSION%|$SPACKLOT_CLUSTER_VERSION|" $yaml_file
+    sed -i "s|%DEPLOYMENT%|${SPACKLOT_CLUSTER}/$SPACKLOT_CLUSTER_VERSION|" $yaml_file
+    sed -i "s|%INSTALLROOT%|${SPACKLOT_ENV_BUILD}/opt|" $yaml_file
+    sed -i "s|%MODULESROOT%|${SPACKLOT_ENV_BUILD}/modules/$SPACKLOT_CLUSTER_VERSION|" $yaml_file
+    sed -i "s|%BASEROOT%|$SPACKLOT_ENV_BUILD|" $yaml_file
+    sed -i "s|%TMPROOT%|$SPACKLOT_TMPROOT|g" $yaml_file
+done
+
+# Activate the environment
+spack env activate $SPACKLOT_ENV_BUILD
+spack env status
+
+# Make sure packages are concretized separately (to allow multiple variants)
+spack config add 'concretizer:unify:false'
+
+# Set Spack-version specific bootstrap path to avoid conflicts
+tsecho "Set bookstrap location to ${GCOL}${SPACKLOT_ROOT_BOOTSTRAP}$DCOL"
+spack bootstrap root $SPACKLOT_ROOT_BOOTSTRAP
+
+# Add package constraints from initial config file
+if [[ -f clusters/$SPACKLOT_DEPLOYMENT_NAME/constraints.cfg ]]; then
+    cp clusters/$SPACKLOT_DEPLOYMENT_NAME/constraints.cfg $SPACKLOT_ENV_BUILD
+    
+    if [[ ! $skip_steps =~ " "(constraints|all)" "  ]]; then
+        tsecho "Setting package constraints"
+        $SPACKLOT_ENV_BUILD/bin/add_constraints
+        echo
+    fi
+fi
+
+# Detect available external compilers (e.g., Cray compilers)
+if [[ ${SPACKLOT_DETECT_COMPILERS:-false} == true ]]; then
+    spack compiler find
+fi
+
+# Create mirrors and prepare env to generate build_cache binaries
+if [[ $SPACKLOT_PAD_LENGTH != 0 ]]; then
+    spack config add "config:install_tree:padded_length:${SPACKLOT_PAD_LENGTH:-128}"
+fi
+
+signing_keys=$(spack gpg list --signing | awk 'f{print;f=0} /^sec /{f=1}')
+
+if [[ ! $skip_steps =~ " "(mirrors|all)" "  ]]; then
+    for mtype in LOCAL GLOBAL; do
+        mirror_variable=SPACKLOT_MIRROR_${mtype}
+        mirror=${!mirror_variable}
+        mirror_type=posix
+
+        if [[ -n $mirror ]]; then
+            tsecho "Adding mirror ${GCOL}${mirror}$DCOL"
+            if [[ $mirror == /* ]] && [[ ! -d $mirror ]]; then
+                if [[ $(sed 's/production/GLOBAL/;s/testing/LOCAL/' <<< $SPACKLOT_DEPLOYMENT_TYPE) == $mtype ]]; then
+                    spack mirror create -d $mirror -a
+                fi
+            fi
+
+            spack mirror add hpc_mirror_${mtype,,} $mirror
+
+            # Make sure signing keys are pushed (and index regenerated!)
+            if [[ $mirror != https* ]]; then
+                repo_owner=$(stat -c '%U' $mirror)
+
+                if [[ $my_user == $repo_owner ]]; then
+                    for key in $signing_keys; do
+                        spack gpg publish --rebuild-index -m hpc_mirror_${mtype,,} $key
+                    done
+                fi
+            fi
+        fi
+    done
+
+    # Install any known keys from the cache
+    tsecho "Adding trusted keys from buildcaches"
+    spack buildcache keys --install --trust
+    echo
+fi
+
+# Add custom repos
+if [[ -f clusters/$SPACKLOT_DEPLOYMENT_NAME/repos.cfg ]]; then
+    while read -r repo; do
+        spack repo add $repo
+    done < clusters/$SPACKLOT_DEPLOYMENT_NAME/repos.cfg
+fi
+
+# Add module templates
+spack config add "config:template_dirs:$SPACK_ENV/templates/modules"
+
+# Add any requested upstreams
+for upstream_name in ${!SPACKLOT_UPSTREAMS[@]}; do
+    spack config add "upstreams:${upstream_name}:install_tree:${SPACKLOT_UPSTREAMS[$upstream_name]}"
+done
+
+#
+## ---- BUILD PACKAGES IN ENVIRONMENTS ----
+#
+
+if [[ ! $skip_steps =~ " "(packages|all)" "  ]]; then
+    tsecho "Building packages in build environment"
+    echo
+
+    # Build packages from source in build environment
+    cd $SPACKLOT_ENV_BUILD
+    bin/install_packages
+
+    # Run script to populate the binary build_cache
+    if [[ $SPACKLOT_PAD_LENGTH != 0 ]]; then
+        tsecho "Populating build cache with package binaries"
+        echo
+        bin/populate_build_cache
+    else
+        tsecho "Skipping build cache due to pad length = 0"
+    fi
+
+    # Create modules in build environment
+    if [[ -n $SPACKLOT_ROOT_MODULES ]]; then
+        tsecho "Generating modules in build environment"
+        spack module lmod refresh -y
+    fi
+
+    # Some clusters (e.g., Cray) need to run extra commands to prep environment
+    if [[ -f $SPACKLOT_ENV_BUILD/bin/postprocess ]]; then
+        tsecho "Running postprocessing on the build environment"
+        $SPACKLOT_ENV_BUILD/bin/postprocess
+    fi
+fi
+
+spack env deactivate
+
+# Status message
+cat << EOF
+
+====================================
+    SPACKLOT DEPLOYMENT COMPLETE
+====================================
+
+Machine:        $SPACKLOT_DEPLOYMENT_NAME
+Date:           $SPACKLOT_DEPLOYMENT_TIME
+Type:           $SPACKLOT_DEPLOYMENT_TYPE
+
+Spack root:     $SPACK_ROOT
+Build root:     $SPACKLOT_ENV_BUILD
+Public root:    $SPACKLOT_ENV_PUBLIC
+Package root:   ${packages_path:-$SPACKLOT_ROOT_PACKAGES}
+
+Github repo:    ${SPACKLOT_GITHUB:-none}
+Spack branch:   ${SPACKLOT_CUSTOM_BRANCH:=$SPACKLOT_DEFAULT_CUSTOM_BRANCH}
+Package branch: ${SPACKLOT_PACKAGES_BRANCH:=$SPACKLOT_DEFAULT_PACKAGES_BRANCH}
+
+EOF
+
+if [[ ${skip_pkgs:-no} != yes ]]; then
+cat << EOF
+Install logs:   $SPACKLOT_ENV_BUILD/logs/installs.$SPACKLOT_DEPLOYMENT_TIME
+Caching logs:   $SPACKLOT_ENV_BUILD/logs/cache.$SPACKLOT_DEPLOYMENT_TIME
+
+EOF
+fi
+
+cat << EOF
+*** First check that builds in build environment are valid! ***
+
+To install into $SPACKLOT_DEPLOYMENT_TYPE public environment, run the following:
+
+$SPACKLOT_ENV_BUILD/bin/publish "Initial deployment of environment on $SPACKLOT_DEPLOYMENT_NAME"
+
+EOF

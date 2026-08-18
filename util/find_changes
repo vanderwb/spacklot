@@ -1,0 +1,135 @@
+#!/bin/bash
+#
+#   This script compares files in this repo to their versions in a
+#   specified deployment directory and outputs changes to assist in
+#   incorporating those changes to this repo.
+#
+#   Author:         Brian Vanderwende
+#   Last Revised:   15:49, 17 Aug 2026
+#
+
+my_root="$( cd "$(dirname "$0")"/.. ; pwd )"
+
+function usage {
+cat << EOF
+Usage: $0 [OPTIONS] BUILD_ENV_PATH
+
+Options
+    -h, --help                  show this help message
+    -b, --brief                 only show files that have changed
+    -c, --cluster               use different cluster name than auto-detected
+    -d, --diff                  provide detail on the differences in each file
+
+EOF
+exit ${1:-0}
+}
+
+#
+## ---- INITIALIZATION ----
+#
+
+# Pretty colors
+export PCOL="\033[1;35m" RCOL="\033[1;31m" DCOL="\033[0m"
+
+# Handle arguments
+user_args=( "$@" )
+output_mode=default
+
+while [[ $# -gt 0 ]]; do
+    key="$1"
+
+    case $key in
+        -h|--help)
+            usage
+            ;;
+        -b|--brief)
+            output_mode=brief
+            ;;
+        -c|--cluster)
+            cluster=$2
+            shift
+            ;;
+        -d|--diff)
+            diff_mode=true
+            ;;
+        *)
+            env_path=$1
+            ;;
+    esac
+
+    shift
+done
+
+if [[ -z $env_path ]]; then
+    >&2 echo "Error: a path to an active deployment build environment must be given"
+    usage 1
+elif [[ ! -f $env_path/main.cfg ]]; then
+    >&2 echo "Error: path given does not appear to be a deployment build environment"
+    exit 1
+else
+    . $env_path/main.cfg
+    cluster=${cluster:-$SPACKLOT_CLUSTER}
+fi
+
+cat << EOF
+
+============================================================
+
+Comparing changes from active deployment
+
+Path:   $env_path
+Host:   $cluster
+Type:   $SPACKLOT_DEPLOYMENT_TYPE
+
+Output mode:    $output_mode
+Display diffs:  ${diff_mode:=false}
+
+============================================================
+
+Comparing each tracked file from that in the specified deployment ...
+
+EOF
+
+declare -A path_map
+path_map[templates/modules]=templates/modules
+path_map[templates/compilers]=templates/compilers
+path_map[src/build/bin]=bin
+path_map[src/build/bin/tools]=bin/tools
+path_map[clusters/$cluster]=.
+path_map[clusters/$cluster/postprocess]=postprocess
+path_map[clusters/$cluster/spack.yaml]=templates/yaml/spack.yaml
+path_map[clusters/$cluster/includes]=templates/yaml/includes
+
+cd $my_root
+
+for src_path in ${!path_map[@]}; do
+    if [[ -d $src_path ]]; then
+        src_files="$(find -L $src_path -maxdepth 1 -type f,l)"
+    else
+        src_files=$src_path
+    fi
+
+    for src_file in $src_files; do
+        dep_file=$(sed "s|$src_path|${path_map[$src_path]}|" <<< $src_file)
+
+        if [[ -f $env_path/$dep_file ]] && [[ $dep_file != ./spack.yaml ]]; then
+            if cmp -s $my_root/$src_file $env_path/$dep_file; then
+                if [[ $output_mode != brief ]]; then
+                    echo -e " - $src_file"
+                fi
+            else
+                echo -e "${RCOL} - $src_file (changed)$DCOL\n"
+                echo -e "   Source file:   $my_root/$src_file (modified $PCOL$(date -r $my_root/$src_file)$DCOL)"
+                echo -e "   Deployed file: $env_path/$dep_file (modified $PCOL$(date -r $env_path/$dep_file)$DCOL)"
+
+                if [[ $diff_mode == true ]]; then
+                    read -n 1 -s -r -p "   Press any key to display differences..."
+                    diff --minimal --color=always -u $my_root/$src_file $env_path/$dep_file | less -r
+                    echo
+                fi
+
+                echo
+            fi
+        fi
+    done
+done

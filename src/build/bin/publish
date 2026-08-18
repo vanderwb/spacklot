@@ -1,0 +1,681 @@
+#!/bin/bash
+#
+#   This script is designed to publish changes made in the build
+#   environment to the production environment in a reproducible
+#   and traceable way. The script does a number of things:
+#
+#
+#   Note:   as of Spack v0.17, the activate scripts will break if
+#           used with an environent already activated outside of a
+#           shell script. So we must activate in the script!
+#
+#   Author:         Brian Vanderwende
+#   Last Revised:   20:20, 17 Aug 2026
+#
+
+
+function usage {
+cat << EOF
+Usage: $0 [OPTIONS] "Commit message for publish"
+
+Use this script to sync the public environment with the build environment,
+making all changes in build user-visible. Any new packages, postprocessing
+steps, modules, view additions will be ported over.
+
+This script uses locking to ensure that only one publish step is happening at a
+time.
+
+Specifically, this script performs the following steps:
+
+    1. Sanity checks of current environment
+    2. Check to see whether build spack.yaml and spack.lock are in sync
+    3. Check to see whether build and public postprocessing steps are in sync
+    4. Conclude whether any changes need to be made to the public env
+    5. Sync build and public environment package installs
+    6. (Re)build the public module tree
+    7. Postprocess the public environment
+    8. Copy artifacts from Spack to the public directory (e.g., .spack-db)
+    9. Commit and push changes to Github repo
+
+Options
+    -h, --help              show this help message
+    -a, --access [LEVEL]    set max access to "stack" modules [user/group/ALL]
+    -d, --dry-run           show what would be published; don't make any changes
+    --force                 attempt to publish changes, even if none detected
+    -r, --resume            continue an existing publish attempt (caution!)
+    --set-default           upon publishing, make this stack the default
+    -v, --verbose           provide additional logging messages
+
+EOF
+exit
+}
+
+if [[ " $@ " == *" -h "* ]] || [[ " $@ " == *" --help "* ]]; then
+    usage
+fi
+
+function remove_lock {
+    if [[ $SPACKLOT_LOCK_PID ]]; then
+        rm -f $SPACKLOT_ENV_BUILD/.publock
+    fi
+}
+
+function create_gitignore {
+cat > $SPACKLOT_ENV_PUBLIC/.gitignore << EOF
+.spack-env
+cache
+logs
+modules
+opt
+EOF
+
+git add .gitignore
+}
+
+function create_git_readme {
+cat > $SPACKLOT_ENV_PUBLIC/README.md << EOF
+# Spacklot Deployment
+This branch tracks the **production** deployment of Spack for the following configuration:
+
+| | $SPACKLOT_CLUSTER |
+|--|--|
+| Creation date | $(date) |
+| Spacklot commit | $SPACKLOT_DEPLOYMENT_COMMIT |
+| Host version | $SPACKLOT_CLUSTER_VERSION |
+| Deployment path | $SPACKLOT_ROOT_DEPLOYMENT |
+| Environments path | $SPACKLOT_ROOT_ENVS |
+
+This repository should *only* be updated via the \`publish\` script contained in the build environment. Any manual changes to this branch will cause headaches when you or another consultant attempt to publish new packages!
+EOF
+
+git add README.md
+}
+
+function write_manifest_header {
+cat > $1 << EOF
+# New package installs
+# Start time: $start_time
+
+singleton:
+EOF
+}
+
+function create_manifest {
+    declare -A config columns
+
+    # Derive registry columns
+    for opt in ${install_params//|/ } publish; do
+        for n in ${!field_list[@]}; do
+            if [[ ${field_list[$n]} == "config[$opt]" ]]; then
+                columns[$opt]=$n
+            fi
+        done
+    done
+
+    # Create package manifest for new installs
+    write_manifest_header $1
+
+    # Query all spec hashes
+    while read spec; do
+        reg_line=$(sed -n '3,$ s/ *| */|/gp' $SPACKLOT_ENV_BUILD/registry |                       \
+                awk -F\| -v spec="$spec" '$NF == spec {print $0; exit}')
+        spec_hash=$(cut -d'|' -f1 <<< "$reg_line")
+        config=()
+
+        if [[ -z $spec_hash ]]; then
+            tsecho "Error: package $spec not found in registry file"
+            exit 1
+        elif [[ " $build_hashes " != *" $spec_hash "* ]]; then
+            tsecho "Error: package $spec (hash=/$spec_hash) not found in build environment roots"
+            exit 1
+        fi
+
+        for opt in ${!columns[@]}; do
+            config[$opt]=$(cut -d'|' -f$((${columns[$opt]} + 1)) <<< "$reg_line")
+        done
+
+        if [[ ${config[publish]:-yes} == yes ]]; then
+            unset config[publish]
+            entry="    $spec <match:$spec_hash>"
+
+            for opt in ${!config[@]}; do
+                def_var=default_$opt
+
+                if [[ ${config[$opt]} != ${!def_var} ]]; then
+                    entry="$entry <$opt:${config[$opt]}>"
+
+                    if [[ $opt == register ]]; then
+                        entry="$entry <type:compiler>"
+                    fi
+                fi
+            done
+
+            echo "$entry" >> $1
+        fi
+    done < <(sed 's/^[ ]*- //' <<< $new_pkgs | sed '$!N; s/\n\s\s*\(.*\)/ \1/; P; D')
+}
+
+function store_publish_options {
+cat > $SPACKLOT_ENV_BUILD/.pubstore << EOF
+force_commit=true
+set_as_default=$set_as_default
+commit_msg="$commit_msg"
+access_level=$access_level
+EOF
+}
+
+function commit_error {
+>&2 cat << EOF
+Error:  You must provide a commit message as the only argument to this
+        script. Make sure to put the message in quotes.
+
+Usage:  publish "new install of very cool modules"
+
+EOF
+exit 1
+}
+
+function dry_run_header {
+cat << EOF
+
+*** DRY RUN REQUESTED - NO CHANGES WILL BE MADE! ***
+
+The following output shows changes that would be made to the public environment
+spack.yaml or postprocess unit(s) upon calling publish:
+
+EOF
+}
+
+function env_diff {
+    tsecho "Checking for pending changes to public"
+    unit_list=$(ls --color=never -1 $SPACKLOT_ENV_BUILD/postprocess 2> /dev/null | xargs)
+    yaml_list=$(ls --color=never -1 $SPACKLOT_ENV_BUILD/includes 2> /dev/null | xargs)
+
+    if ! cmp -s $SPACKLOT_ENV_PUBLIC/spack.yaml $SPACKLOT_ENV_BUILD/.prototype/spack.yaml; then
+        tsecho " >> ${GCOL}spack.yaml${DCOL} is changed"
+        changes_detected=1
+    else
+        changes_detected=0
+    fi
+
+    for yaml in $yaml_list; do
+        if ! cmp -s $SPACKLOT_ENV_BUILD/.prototype/includes/$yaml $SPACKLOT_ENV_PUBLIC/includes/$yaml; then
+            tsecho " >> included YAML: ${GCOL}${yaml}$DCOL is changed"
+            ((changes_detected+=2))
+        fi
+    done
+
+    for unit in $unit_list; do
+        if [[ $unit != *.build ]]; then
+            if ! cmp -s $SPACKLOT_ENV_BUILD/postprocess/$unit $SPACKLOT_ENV_PUBLIC/postprocess/$unit; then
+                tsecho " >> postprocessing unit: ${GCOL}${unit}$DCOL is changed"
+                ((changes_detected+=2))
+            fi
+        fi
+    done
+
+    return $changes_detected
+}
+
+#
+## ---- INITIALIZATION ----
+#
+
+# Make sure this script is not being sourced
+if (return 0 2>/dev/null); then
+    >&2 echo "Error: I need to be executed, not sourced"
+    exit 1
+fi
+
+# Perform common script setup including environment checks
+export my_dir="$( cd "$(dirname "$0")" ; pwd )"
+. $my_dir/tools/init.sh
+my_user=$(whoami)
+
+# Check for "freeze" file - if exists, we cannot publish changes
+if [[ -f $SPACKLOT_ENV_BUILD/freeze ]]; then
+    tsecho "Error:  Deployment is frozen. Reason given in freeze file:"
+    cat $SPACKLOT_ENV_BUILD/freeze
+    exit 1
+fi
+
+# Create lockfile to block other actions during publishing
+trap remove_lock EXIT
+export SPACKLOT_LOCK_PID=$$
+echo $SPACKLOT_LOCK_PID > $SPACKLOT_ENV_BUILD/.publock
+force_resume=N
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -a|--access)
+            if [[ $1 == *=* ]]; then
+                access_level=${1#*=}
+            else
+                access_level=$2
+                shift
+            fi
+            ;;
+        -d|--dry-run|--dryrun)
+            dry_run=true
+            ;;
+        --force)
+            force_commit=true
+            ;;
+        -r|--resume)
+            force_resume=tbd
+            echo "Danger: You are asking to resume a failed publish."
+
+            while [[ YES != ${force_resume^^}* ]] && [[ NO != ${force_resume^^}* ]]; do
+                if [[ $force_resume != tbd ]]; then
+                    echo   "         ${FCOL}>> Invalid input ($force_resume); try again!${DCOL}"
+                fi
+
+                read -e -p "        Are you sure (y/N)? " force_resume
+                force_resume=${force_resume:=blank}
+            done
+
+            if [[ NO == ${force_resume^^}* ]]; then
+                exit
+            fi
+            ;;
+        --set-default)
+            export set_as_default=true
+            ;;
+        -v|--verbose)
+            export log_verbosity=$((log_verbosity + 1))
+            ;;
+        *)
+            commit_msg="$1"
+            ;;
+    esac
+
+    shift
+done
+
+if [[ YES == ${force_resume^^}* ]]; then
+    if [[ -f $SPACKLOT_ENV_BUILD/.pubstore ]]; then
+        . $SPACKLOT_ENV_BUILD/.pubstore
+        tsecho "Resuming publish of commit $GCOL$commit_msg$DCOL"
+    else
+        tsecho "Error:  Prior publish attempt not found. Cannot resume."
+        exit 1
+    fi
+elif [[ $dry_run != true ]]; then
+    if [[ -z $commit_msg ]]; then
+        commit_error
+    else
+        store_publish_options
+    fi
+fi
+
+tsecho "Testing build environment for unconcretized changes"
+
+if [[ $SPACK_ENV/spack.yaml -nt $SPACK_ENV/spack.lock ]]; then
+    conc_test=$(spack concretize -j 4 |& grep -v -e "Updating view at"          \
+        -e "Skipping external" -e "terminal_title" -e "No new specs" || true)
+fi
+
+if [[ -n $conc_test ]]; then
+>&2 cat << EOF
+$conc_test
+
+Error:  Modifications to $SPACK_ENV/spack.yaml are not properly installed!
+        Resolve spack.yaml <-> spack.lock inconsistency before attempting
+        to push to the public environment.
+
+EOF
+exit 1
+fi
+
+tsecho "Checking Spack package repo for uncommitted changes"
+package_root=$(spack repo list | grep builtin | awk '{print $NF}')
+
+if [[ $(stat -c '%U' $package_root) != $my_user ]]; then
+    if [[ $my_user != $SPACKLOT_PRODUCTION_USER ]]; then
+        tsecho " >> Package repo not owned by $my_user, but you are not $SPACKLOT_PRODUCTION_USER so will proceed"
+    else
+        tsecho "Error: Package repo is not owned by $SPACKLOT_PRODUCTION_USER; cannot inspect!"
+        exit 1
+    fi
+else
+    spack_test=$(cd $package_root; git status --porcelain | grep repos/spack_repo/builtin || true)
+fi
+
+if [[ -n $spack_test ]]; then
+if [[ $SPACKLOT_DEPLOYMENT_TYPE == production ]]; then
+>&2 cat << EOF
+
+Error:  Uncommitted package changes detected in the deployment's builtin repo.
+        Publishing a build from an uncommitted package recipe reduces
+        reproducibility and is not allowed. The following files must be
+        committed:
+
+$spack_test
+
+EOF
+exit 1
+else
+tsecho " >> CHANGES DETECTED, but allowing as this isn't a production deployment"
+fi
+fi
+
+# Make sure build cache is up to date
+if [[ $SPACKLOT_PAD_LENGTH != 0 ]]; then
+    tsecho "Updating the spack build cache with latest binaries"
+    $SPACK_ENV/bin/populate_build_cache
+else
+    tsecho "Skipping build cache as caching is off"
+fi
+
+if [[ ! -f $SPACKLOT_ENV_PUBLIC/spack.yaml ]] && [[ $dry_run == true ]]; then
+    tsecho "Dry run requested but no public environment exists. Exiting"
+    exit
+fi
+
+#
+## ---- CONSTRUCT THE PUBLIC ENVIRONMENT ----
+#
+
+# First, get metadata from the build environment
+found_pkgs="$(spack find -L --no-groups -r)"
+build_hashes="$(awk '$1 ~ /\[[\^e+]\]/ {print $2}' <<< "$found_pkgs" | xargs)"
+pad_length=$(awk '/padded_length: / {print $2}' $SPACK_ENV/spack.yaml)
+
+tsecho "Converting build spack.yaml for use in public environment"
+cd $SPACK_ENV; mkdir -p .prototype/includes; spack env deactivate
+cp spack.yaml .prototype
+
+if [[ -d $SPACKLOT_ENV_BUILD/includes ]]; then
+    rsync -a --delete $SPACKLOT_ENV_BUILD/includes/ .prototype/includes
+fi
+
+for yaml_file in .prototype/spack.yaml $(ls .prototype/includes/* 2> /dev/null); do
+    if [[ -n $pad_length ]]; then
+        sed -i -r "/${SPACKLOT_ENV_BUILD//\//\\/}\/opt/ s|^([^/]*).{$pad_length}|\1$SPACK_ROOT/opt/spack/|" $yaml_file
+    fi
+
+    sed -i "s|\([ ]*lmod:['\" ]*\)$SPACKLOT_ENV_BUILD/modules\(.*\)|\1$SPACKLOT_ROOT_MODULES\2|" $yaml_file
+    sed -i -r "s|${SPACKLOT_ENV_BUILD}/(view\|wrappers)|${SPACKLOT_ROOT_BASE}/\1|" $yaml_file
+done
+
+spack env activate .prototype
+
+if [[ -n $pad_length ]]; then
+    spack config remove 'config:install_tree:padded_length'
+fi
+
+spack config remove 'config:install_tree:root'
+spack env deactivate
+
+# We do this after activating the environment, since missing includes may lead to an error
+sed -i "s|\(.*\)${SPACKLOT_ENV_BUILD}/\(includes/.*\.yaml\)$|\1${SPACKLOT_ENV_PUBLIC}/\2|" .prototype/spack.yaml
+
+if [[ $dry_run == true ]]; then
+    set +e
+    dry_run_header
+    env_diff
+    env_status=$?
+
+    if [[ $env_status -eq 0 ]]; then
+        echo "build and public environments are in sync; no changes will be made"
+    elif [[ $((env_status % 2)) -eq 1 ]]; then
+        echo
+        diff -U2 --color $SPACKLOT_ENV_PUBLIC/spack.yaml .prototype/spack.yaml
+    fi
+
+    echo
+    exit
+fi
+
+if [[ -d $SPACKLOT_ENV_PUBLIC ]]; then
+    tsecho "Testing public environment for untracked changes"
+    cd $SPACKLOT_ENV_PUBLIC
+
+    local_branch="$(git rev-parse --abbrev-ref HEAD)"
+
+    if [[ $(git rev-parse --abbrev-ref HEAD) != $SPACKLOT_CLUSTER_VERSION ]]; then
+        tsecho "Error:  Incorrect Git repo branch ($local_branch != $SPACKLOT_CLUSTER_VERSION)."
+        exit 1
+    fi
+
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        if [[ ${force_resume,,} == y* ]]; then
+            tsecho "Uncommited changes in Git repo but proceeding anyway (--resume option enabled)"
+        else
+            tsecho "Error:  Uncommitted changes in Git repo. Resolve and then retry.\n$(git status)\n"
+            exit 1
+        fi
+    fi
+
+    if env_diff; then
+        if [[ $force_commit == true ]]; then
+            tsecho "No spack.yaml changes but proceeding anyway (--force option enabled)"
+        else
+            echo -e "\nNo changes detected from public environment; exiting."
+            exit 0
+        fi
+    fi
+
+    if [[ -n $SPACKLOT_GITHUB ]]; then
+        tsecho "Checking that local and remote Git repos match"
+        remote_commit=$(git ls-remote -h origin "$SPACKLOT_CLUSTER_VERSION" | awk '{print $1}')
+        local_commit=$(git rev-parse HEAD)
+
+        if [[ $remote_commit != $local_commit ]]; then
+            tsecho "Error:  Remote repo $SPACKLOT_GITHUB and local repo are not in sync."
+            >&2 echo "           Remote: $remote_commit"
+            >&2 echo -e "           Local:  $local_commit\n"
+            exit 1
+        fi
+    fi
+else
+    tsecho "Initializing public environment and Git repo"
+    echo
+    git init $SPACKLOT_ENV_PUBLIC
+    cd $SPACKLOT_ENV_PUBLIC
+
+    if [[ -n $SPACKLOT_GITHUB ]]; then
+        git remote add origin $SPACKLOT_GITHUB
+    fi
+
+    git checkout -b "$SPACKLOT_CLUSTER_VERSION"
+    echo
+    create_gitignore
+    create_git_readme
+
+    git commit -m "Initialize repo with README and .gitignore"
+
+    if [[ -n $SPACKLOT_GITHUB ]]; then
+        git push -u origin "$SPACKLOT_CLUSTER_VERSION"
+    fi
+fi
+
+# Finally, let's move the YAML file
+sed -i '/  specs:/Q' $SPACKLOT_ENV_BUILD/.prototype/spack.yaml
+
+if [[ -f $SPACKLOT_ENV_PUBLIC/spack.yaml ]]; then
+     sed -n '/  specs:/,$ p' $SPACKLOT_ENV_PUBLIC/spack.yaml >> $SPACKLOT_ENV_BUILD/.prototype/spack.yaml
+fi
+
+mv $SPACKLOT_ENV_BUILD/.prototype/spack.yaml $SPACKLOT_ENV_PUBLIC/spack.yaml
+rsync -a --delete $SPACKLOT_ENV_BUILD/.prototype/includes/ includes
+
+# Switch to the production environment
+spack env activate $SPACKLOT_ENV_PUBLIC
+log_dir=$SPACK_ENV/logs
+mkdir -p $log_dir
+
+# Ensure production YAML is in proper format
+if grep -q -E '^ +specs: +\[' $SPACK_ENV/spack.yaml; then
+    spack python $my_dir/tools/fix_specs.py
+fi
+
+# Store current permissions of stack module
+stack_module=$SPACKLOT_ROOT_MODULES/environment/$mod_type/${SPACKLOT_CLUSTER_VERSION}.lua
+
+if [[ -f $stack_module ]]; then
+    current_access=$(stat -c "%a" $stack_module)
+fi
+
+# Find any packages to remove
+tsecho "Removing any packages that have been uninstalled from build"
+
+while read spec; do
+    spec_hash=$(sed -n '3,$ s/ *| */|/gp' $SPACK_ENV/registry |                           \
+            awk -F\| -v spec="$spec" '$NF == spec {print $1; exit}')
+
+    if [[ " $build_hashes " != *" $spec_hash "* ]]; then
+        tsecho "Checking location of package with hash $PCOL$spec_hash$DCOL" 2
+
+        if [[ -z $local_hashes ]]; then
+            found_pkgs="$(spack find -L --no-groups -r)"
+            local_hashes="$(awk '$1 ~ /\[\+\]/ {print $2}' <<< "$found_pkgs" | xargs)"
+
+            # Prefix locks can become broken...
+            rm -f $SPACK_ROOT/opt/spack/.spack-db/lock
+            rm -f $SPACK_ROOT/opt/spack/.spack-db/prefix_lock
+        fi
+
+        # Are packages local to this deployment or upstream packages?
+        if [[ " $local_hashes " == *" $spec_hash "* ]]; then
+            tsecho "Uninstalling package $PCOL$spec$DCOL" 1
+            spack uninstall --dependents --remove -y /$spec_hash
+        else
+            tsecho "Removing package $PCOL$spec$DCOL" 1
+            spack python $my_dir/tools/remove_spec.py "$spec"
+        fi
+
+        sed -i "/^${spec_hash} .*/d" $SPACK_ENV/registry
+    fi
+done < <(sed -n '/^  specs:/,/^[^-]*$/p' $SPACK_ENV/spack.yaml | grep - | sed 's/^[ -]*//' | tac)
+
+# If there are new packages, install sequentially to improve determinism
+new_pkgs=$(grep -xv -f <(sed -n '/^  specs:/,/^[^-]*$/p' spack.yaml | grep -) <(sed -n '/^  specs:/,/^[^-]*$/p' $SPACKLOT_ENV_BUILD/spack.yaml | grep -) || [[ $? == 1 ]])
+
+if [[ -n $new_pkgs ]]; then
+    tsecho "Creating manifest and installing cached packages"
+    log_manifest=$log_dir/manifest.$start_time
+    create_manifest $log_manifest
+    $my_dir/install_packages -p 1 -n 1 -j 1 --skip-checks --prefer-cache --fail-fast $log_manifest
+
+    # Check that installs completed successfully
+    if [[ ${PIPESTATUS[0]} == 1 ]]; then
+        tsecho "Error:  Spack installations did not complete successfully."
+        echo "        Resolve errors before committing changes to GitHub manually."
+        exit 1
+    fi
+fi
+
+tsecho "Concretizing other environment changes"
+log_concretize=$log_dir/concretize.$start_time
+spack concretize -j 4 &> $log_concretize
+
+tsecho "Ensure specs list is flow-style YAML"
+if grep -q -E '^ +specs: +\[' $SPACK_ENV/spack.yaml; then
+    spack python $my_dir/tools/fix_specs.py
+fi
+
+tsecho "Creating split configuration files for community use"
+mkdir -p $SPACK_ENV/config
+
+for cfg_file in config packages compilers modules mirrors repos concretizer upstreams include toolchains; do
+    if grep -q "^  ${cfg_file}:" spack.yaml 2> /dev/null; then
+        sed -n "/^  [']*${cfg_file}:[':]*/,/^  [a-z]*:/p" spack.yaml | sed '$d; s/^  //' > $SPACK_ENV/config/${cfg_file}.yaml
+
+        case $cfg_file in
+            modules)
+                sed -i '/[ ]*roots:[ ]*/,+1d' $SPACK_ENV/config/modules.yaml
+                ;;
+            mirrors)
+                sed -i 's|s3://|https://stratus.ucar.edu/|' $SPACK_ENV/config/${cfg_file}.yaml
+                ;;
+        esac
+    fi
+done
+
+if [[ -n $SPACKLOT_ROOT_MODULES ]]; then
+    tsecho "Generating modules in public environment"
+    spack module lmod refresh $SPACKLOT_MODULE_FLAGS -y |& grep -v "LMod hierarchy"
+fi
+
+if [[ -d $SPACKLOT_ENV_BUILD/postprocess ]]; then
+    rsync -a --delete $SPACKLOT_ENV_BUILD/postprocess/ postprocess
+fi
+
+tsecho "Running postprocessing script on environment"
+SPACKLOT_ENV_TYPE=public $SPACKLOT_ENV_BUILD/bin/postprocess
+
+tsecho "Make sure user tools can peer into source directories"
+stage_dir=$(spack location -S)
+chmod a+rX $stage_dir
+
+if [[ -n $access_level ]]; then
+    tsecho "Changing environment access level to $GCOL$access_level$DCOL"
+
+    for mod_type in hpcenv; do
+        if [[ -f $stack_module ]]; then
+            case $access_level in
+                user)
+                    chmod 600 $stack_module
+                    ;;
+                group)
+                    chmod 640 $stack_module
+                    ;;
+                all)
+                    chmod 644 $stack_module
+                    ;;
+                *)
+                    >&2 echo "Warning: Skipping unknown access level $RCOL$access_level$DCOL"
+                    ;;
+            esac
+        fi
+    done
+elif [[ -n $current_access ]]; then
+    chmod $current_access $stack_module
+fi
+
+for object in util config registry; do
+    if [[ ! -e $SPACKLOT_ROOT_DEPLOYMENT/$object ]]; then
+        ln -sf $SPACK_ENV/$object $SPACKLOT_ROOT_DEPLOYMENT/$object
+    fi
+done
+
+if [[ ! -d $SPACKLOT_ROOT_PUBLIC/default ]] || [[ $set_as_default == true ]]; then
+    tsecho "Setting environment as default public environment"
+    ln -sfn $SPACKLOT_ROOT_DEPLOYMENT $SPACKLOT_ROOT_PUBLIC/default
+fi
+
+tsecho "Committing stack changes to Git repo"
+echo
+
+# Bring latest changes from Spack install tree; these are components of the stack
+# that can become corrupted and are worth backing up!
+rsync -a --delete --exclude=failures $SPACK_ROOT/opt/spack/.spack-db/ .spack-db
+
+git add spack.yaml spack.lock config registry .spack-db postprocess includes
+
+if [[ -d util ]]; then
+    git add util
+fi
+
+if [[ -n $SUDO_USER ]]; then
+    commit_msg="${SUDO_USER}: $commit_msg"
+fi
+
+git commit -m "$commit_msg"
+echo
+
+if [[ -n $SPACKLOT_GITHUB ]]; then
+    tsecho "Pushing changes to GitHub"
+    echo
+    git push -u origin "$SPACKLOT_CLUSTER_VERSION"
+fi
+
+update_log_pointers manifest concretize
+
+# Commit succesful, so remove ability to resume it
+rm -f $SPACKLOT_ENV_BUILD/.pubstore

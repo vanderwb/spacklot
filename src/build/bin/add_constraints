@@ -1,0 +1,343 @@
+#!/bin/bash
+#
+#   This script is used to add both "externals" - packages found in the current
+#   environment that you wish to use - and "requirements/preferences" - settings
+#   you wish to impose on packages en masse... typically compiling requirements
+#   - to the YAML file.
+#
+#   Author:         Brian Vanderwende
+#   Last Revised:   14:53, 29 Jun 2026
+#
+
+function usage {
+cat << EOF
+Usage: $0 [OPTIONS]
+
+This script can be used to add "constraints" to the build environmment's
+spack.yaml. Such constraints include externals, which can be automatically or
+manually detected, and requirements to set on packages.
+
+If an external is set to be "fixed", this in turn sets buildable to false and
+Spack will be forced to use the external.
+
+Options
+    -h, --help              show this help message
+    -v, --verbose           provide additional logging messages
+
+EOF
+exit
+}
+
+if [[ " $@ " == *" -h "* ]] || [[ " $@ " == *" --help "* ]]; then
+    usage
+fi
+
+# Perform common script setup including environment checks
+export my_dir="$( cd "$(dirname "$0")" ; pwd )"
+. $my_dir/tools/init.sh
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -v|--verbose)
+            export log_verbosity=$((log_verbosity + 1))
+            ;;
+    esac
+
+    shift
+done
+
+log_dir=$SPACK_ENV/logs
+mkdir -p $log_dir
+log_file=$log_dir/constraints.$start_time.${SUDO_USER:-$USER}
+
+function track_external {
+    if [[ -n ${known_externals[$1]} ]]; then
+        known_externals[$1]="${known_externals[$1]} $2"
+    else
+        known_externals[$1]=$2
+    fi
+}
+
+function manual_require {
+    if [[ -z $1 ]]; then
+        tsecho "Error: Invalid requirement set ($1); perhaps no core compiler?"
+        exit 1
+    fi
+
+    if [[ $my_mode == externals ]]; then
+        mod_list=$(spack python $my_dir/tools/add_requirement.py $1 $2 ${meta_core_scope:-constraints} $3)
+    else
+        mod_list=$(spack python $my_dir/tools/add_requirement.py $1 $2 ${meta_scope:-constraints} $3)
+    fi
+
+    for mod_pkg in $mod_list; do
+        tsecho "Set requirement   $GCOL$mod_pkg$DCOL to use $PCOL${1}$DCOL"
+    done
+}
+
+function manual_external {
+    if [[ ${meta_buildable:-yes} == no ]]; then
+        spack python $my_dir/tools/add_external.py $pkg_spec fixed $pkg_path ${meta_scope:-spack} $meta_variants || skipped=yes
+    else
+        spack python $my_dir/tools/add_external.py $pkg_spec buildable $pkg_path ${meta_scope:-spack} $meta_variants || skipped=yes
+    fi
+
+    if [[ -z $skipped ]]; then
+        tsecho "Adding external   $GCOL$pkg_spec (manual)$DCOL"
+        unset skipped
+    fi
+}
+
+function modify_externals {
+    # Some externals will need attributes added to the spec (e.g., openssl needs certs=system)
+    if [[ -n $meta_attributes ]]; then
+        for spec in $@; do
+            tsecho "$FCOL >> Modifying external with requested attributes$DCOL"
+            spack python $my_dir/tools/modify_external.py $spec ${meta_scope:-spack} "$meta_attributes"
+        done
+    fi
+}
+
+function modify_compilers {
+    # Some compilers are provided in a subdirectory of the package root, and thus
+    # won't be added if we add the root as an external. We can add these compilers
+    # via a second step
+    if [[ ${meta_type:-basic} == compiler ]]; then
+        for spec in $@; do
+            read pkg_name version <<< ${spec/@/ }
+
+            if [[ -f $SPACK_ENV/templates/compilers/modify.${pkg_name}.py ]]; then
+                if [[ -n $pkg_path ]]; then
+                    root=$pkg_path
+                else
+                    root=$(spack location -i $spec)
+                fi
+
+                tsecho "$FCOL >> Adding compiler definitions (subdirectory requirement)$DCOL"
+                spack python $SPACK_ENV/templates/compilers/modify.${pkg_name}.py $spec $root ${meta_scope:-spack}
+            fi
+        done
+    fi
+}
+
+function process_entry {
+    if [[ -z $stored_entry ]]; then
+        tsecho "$FCOL >> No entries to process in this section$DCOL" 1
+        return
+    fi
+
+    tsecho "$FCOL >> Processing: $stored_entry (type=${BCOL}$my_mode${DCOL})$DCOL" 1
+
+    case ${my_mode// } in
+        externals)
+            if [[ ${meta_buildable:-yes} == no ]]; then
+                ext_flags="$meta_flags --not-buildable"
+            else
+                ext_flags="$meta_flags"
+            fi
+
+            if [[ $stored_entry == /* ]]; then
+                ext_flags="$ext_flags --path"
+
+                if [[ $stored_entry != *\[*\]* ]]; then
+                    tsecho "Error: spec must be delimited in path by [*]"
+                    exit 1
+                fi
+
+                search_expr=$(sed 's/\[[^]]*\]/\\(\*\\)/g; s/\*/\.\*/g' <<< $stored_entry)
+                search_params=$(tr -cd '(' <<< $search_expr | wc -c)
+                pkg_paths=$(echo $(tr -d '[]' <<< $stored_entry))
+
+                if [[ -n $pkg_paths ]]; then
+                    for pkg_path in $pkg_paths; do
+                        if [[ $search_params -eq 1 ]]; then
+                            pkg_spec=$(sed "s|$search_expr|\1|; s|/|@|" <<< $pkg_path)
+                            pkg_name=${pkg_spec%@*}
+                            pkg_version=${pkg_spec#*@}
+                        else
+                            read pkg_name pkg_version <<< $(sed "s|$search_expr|\1 \2|" <<< $pkg_path)
+                            pkg_spec=${pkg_name}@$pkg_version
+                        fi
+
+                        if [[ -d $pkg_path ]] && [[ ! -L $pkg_path ]]; then
+                            if [[ " ${known_externals[@]} " != *" ${pkg_path%%/} "* ]]; then
+                                if [[ ${meta_detection:-auto} == auto ]]; then
+                                    if [[ -n $meta_variants ]]; then
+                                        tsecho "${PCOL}Note: Variants cannot be specified when using automatic$DCOL"
+                                        tsecho "${PCOL}      external detection. Ignoring given variants$DCOL"
+                                    fi
+
+                                    auto_result=$(spack external find $ext_flags $pkg_path $pkg_name)
+                                else
+                                    unset auto_result
+                                fi
+
+                                if [[ $auto_result == *spack.yaml* ]]; then
+                                    tsecho "Adding external   $GCOL$pkg_spec$DCOL"
+                                else
+                                    manual_external
+                                fi
+
+                                modify_compilers $pkg_spec
+                                modify_externals $pkg_spec
+                                track_external $pkg_name ${pkg_path%%/}
+                            fi
+                        elif [[ $pkg_path != *sbang ]] && [[ ! -e $pkg_path ]]; then
+                            tsecho "Skipping external $BCOL${pkg_spec} (not found!)$DCOL"
+                        fi
+                    done
+
+                    # Should externals also "use" the core compiler?
+                    if [[ ${meta_use_core:-no} != no ]]; then
+                        manual_require %$SPACKLOT_CORE_GCC ${meta_use_core:-prefer} "$stored_entry"
+                    fi
+
+                    unset pkg_spec pkg_name pkg_version pkg_path
+                fi
+            elif [[ $meta_prefix == /* ]]; then
+                if [[ -z $meta_version ]]; then
+                    tsecho "Error: Must set version attribute if using prefix (prefix=$meta_prefix)"
+                    exit 1
+                fi
+
+                for pkg in $stored_entry; do
+                    if [[ " ${known_externals[$pkg]} " != *" $meta_prefix "* ]]; then
+                        pkg_spec=${pkg}@$meta_version pkg_path=$meta_prefix
+                        manual_external
+                        modify_compilers $pkg_spec
+                        modify_externals $pkg_spec
+                        track_external $pkg $meta_prefix
+                    fi
+                done
+
+                # Should externals also "use" the core compiler?
+                if [[ ${meta_use_core:-no} != no ]]; then
+                    manual_require %$SPACKLOT_CORE_GCC ${meta_use_core:-prefer} "$stored_entry"
+                fi
+            else
+                auto_result=$(spack external find $ext_flags $stored_entry)
+
+                if [[ $auto_result == *spack.yaml* ]]; then
+                    found_list=$(grep "^[^=-]" <<< $auto_result | xargs)
+                    tsecho "Adding externals  $GCOL${found_list}$DCOL"
+                    modify_compilers $found_list
+                    modify_externals $found_list
+                fi
+
+                # Should externals also "use" the core compiler?
+                if [[ ${meta_use_core:-no} != no ]]; then
+                    manual_require %$SPACKLOT_CORE_GCC ${meta_use_core:-prefer} "$stored_entry"
+                fi
+            fi
+            ;;
+        require|prefer)
+            manual_require "$meta_requires" "${my_mode// }" "$stored_entry"
+            ;;
+        *)
+            tsecho "Error: Unknown mode $my_mode"
+            exit 1
+            ;;
+    esac
+
+    unset stored_entry
+}
+
+# First, let's get the known external prefixes
+declare -A known_externals
+external_data=$(spack config get packages | grep -e "^  [^ ]" -e prefix: | grep --no-group-separator -B1 prefix: || true)
+
+while read data; do
+    if [[ $data != *prefix:* ]]; then
+        pkg_name=${data%:}
+    else
+        pkg_path=$(awk '{print $2}' <<< $data)
+        track_external $pkg_name $pkg_path
+    fi
+done <<< "$external_data"
+
+# Add package configuration settings
+if [[ -f $SPACK_ENV/constraints.cfg ]]; then
+    tsecho "Finding specified package configuration in constraints.cfg"
+
+    while read entry; do
+        if [[ -z $entry ]]; then
+            continue
+        elif [[ $entry == *\$* ]]; then
+            entry=$(envsubst <<< $entry)
+        fi
+
+        case $entry in
+            \#*)
+                continue
+                ;;
+            *'{'*)
+                if [[ -n $my_mode ]]; then
+                    tsecho "Error: $my_mode section is not finished ('}' missing?)"
+                    exit 1
+                fi
+
+                IFS=: read my_mode my_meta <<< ${entry%%\{*}
+
+                tsecho "${BCOL}Activating mode = ${my_mode}$DCOL"
+
+                for meta_data in $my_meta; do
+                    if [[ $meta_data == *=* ]]; then
+                        tsecho "$FCOL >> Custom setting: ${meta_data%=*} = ${meta_data##*=}$DCOL"
+                        declare meta_${meta_data%=*}=${meta_data##*=}
+                    elif [[ $meta_data == core ]]; then
+                        meta_requires=%$SPACKLOT_CORE_GCC
+                    elif [[ $meta_data == compat ]]; then
+                        if [[ -z $SPACKLOT_COMPAT_GCC ]]; then
+                            tsecho "${PCOL}Note: Compatibility GCC version requested, but SPACKLOT_COMPAT_GCC not set$DCOL"
+                            tsecho "${PCOL}      Using SPACKLOT_CORE_GCC as compatibility GCC$DCOL"
+                            SPACKLOT_COMPAT_GCC=$SPACKLOT_CORE_GCC
+                        fi
+
+                        meta_requires=%$SPACKLOT_COMPAT_GCC
+                    else
+                        meta_requires=$meta_data
+                    fi
+                done
+
+                if [[ ${meta_scope:-spack} != spack ]]; then
+                    meta_flags="--scope $meta_scope"
+                fi
+                ;;
+            *'}'*)
+                process_entry
+
+                for var_name in my_mode ${!meta_*}; do
+                    unset $var_name
+                done
+                ;;
+            *=*)
+                export $entry
+                ;;
+            *)
+                if [[ $entry == /* ]] && [[ -n $stored_entry ]]; then
+                    process_entry
+                fi
+
+                if [[ " $(tr ',' ' ' <<< ${meta_host:-$SPACKLOT_CLUSTER}) " != *" $SPACKLOT_CLUSTER "* ]]; then
+                    tsecho "Skipping: $stored_entry (wrong host type)" 2
+                    continue
+                fi
+
+                if [[ " $(tr ',' ' ' <<< ${meta_gpu:-${SPACKLOT_GPU_TYPE:-cuda}}) " != *" ${SPACKLOT_GPU_TYPE:-cuda} "* ]]; then
+                    tsecho "Skipping: $stored_entry (wrong gpu type)" 2
+                    continue
+                fi
+
+                stored_entry="${stored_entry:+$stored_entry }$entry"
+                tsecho "Pending: $stored_entry" 2
+                ;;
+        esac
+    done < $SPACK_ENV/constraints.cfg
+fi
+
+if [[ -n $stored_entry ]]; then
+    tsecho "Error: $my_mode section is not finished ('}' missing?)"
+    exit 1
+fi
+
+update_log_pointers constraints

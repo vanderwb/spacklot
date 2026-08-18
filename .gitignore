@@ -1,0 +1,4 @@
+*.pyc
+clusters/cpedev
+disable-*.cfg
+.cache
