@@ -1,4 +1,6 @@
 *.pyc
-clusters/cpedev
+clusters/*
+!clusters/default
+!clusters/deploy.cfg
 disable-*.cfg
 .cache
