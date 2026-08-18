@@ -1,0 +1,72 @@
+env_vars:
+  set:
+    NVCCFLAGS: -allow-unsupported-compiler
+    NVCC_PREPEND_FLAGS: -allow-unsupported-compiler
+packages:
+  adios2:
+    prefer:
+    - +cuda
+  cuda:
+    require:
+    - +allow-unsupported-compilers
+    variants:
+    - +dev
+  hwloc:
+    variants:
+    - +cuda
+    - +nvml
+  intel-oneapi-compilers:
+    variants:
+    - +nvidia
+  kokkos:
+    require:
+    - spec: +cuda +wrapper ~alloc_async
+      when: '%gcc'
+    - spec: +cuda +wrapper ~alloc_async
+      when: '%nvhpc'
+  libfabric:
+    variants:
+    - +cuda
+    - +gdrcopy
+  libllvm:
+    conflict:
+    - llvm-amdgpu
+  mpich:
+    variants:
+    - +cuda
+  mvapich-plus:
+    require:
+    - +cuda
+  nvtop:
+    require:
+    - +cuda
+    - support:=nvidia
+  openmpi:
+    require:
+    - +cuda
+  ucx:
+    variants:
+    - +cuda
+    - +gdrcopy
+modules:
+  default:
+    lmod:
+      cuda:
+        environment:
+          set:
+            CUDATOOLKIT_HOME: '{prefix}'
+            CUDA_VERSION: '{version}'
+            NVHPC_CUDA_HOME: '{prefix}'
+          prepend_path:
+            LD_LIBRARY_PATH: '{prefix}/lib64:{prefix}/nvvm/lib64:{prefix}/extras/CUPTI/lib64:{prefix}/extras/Debugger/lib64'
+      cudnn:
+        environment:
+          prepend_path:
+            LD_LIBRARY_PATH: '{prefix}/lib'
+      cutensor:
+        filter:
+          exclude_env_vars:
+          - HPC_LDFLAGS_CUTENSOR
+        environment:
+          set:
+            HPC_LDFLAGS_CUTENSOR_CUDA: '{prefix}/lib/" .. os.getenv("CUDA_MAJOR_VERSION") .."'

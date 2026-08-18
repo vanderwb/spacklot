@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   10:40, 18 Aug 2026
+#   Last Revised:   14:43, 18 Aug 2026
 #
 
 set -e
@@ -134,14 +134,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             export SPACKLOT_DEPLOYMENT_NAME=$1
-
-            # Check for mandatory cluster components
-            for component in main.cfg spack.yaml; do
-                if [[ ! -e $SPACKLOT_DIR/clusters/$1/$component ]]; then
-                    tsecho "Error: Cluster $1 missing required component $component"
-                    exit 1
-                fi
-            done
             ;;
     esac
 
@@ -151,6 +143,15 @@ done
 # Source specified config
 . $SPACKLOT_DIR/clusters/${spacklot_config:-deploy}.cfg
 export SPACKLOT_PRODUCTION_USER
+cluster_dir=$SPACKLOT_DIR/clusters/$SPACKLOT_COLLECTION/$1
+
+# Check for mandatory cluster components
+for component in main.cfg spack.yaml; do
+    if [[ ! -e $cluster_dir/$component ]]; then
+        tsecho "Error: Cluster $1 missing required component $component"
+        exit 1
+    fi
+done
 
 if [[ $SPACKLOT_DEPLOYMENT_TYPE == production ]]; then
     if [[ $key_user != $SPACKLOT_PRODUCTION_USER ]]; then
@@ -162,9 +163,6 @@ fi
 if [[ -z $SPACKLOT_DEPLOYMENT_NAME ]]; then
     tsecho "Error: deployment configuration must be specified"
     usage 1
-elif [[ ! -f $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/main.cfg ]]; then
-    tsecho "Error: deployment "$SPACKLOT_DEPLOYMENT_NAME" not recognized from available options"
-    exit 1
 fi
 
 if [[ -n $packages_path ]] && [[ -n $custom_repo ]]; then
@@ -176,9 +174,9 @@ fi
 if [[ -n $tmp_file_path ]]; then
     settings_file=$tmp_file_path
     sed "s/\(SPACKLOT_CLUSTER_VERSION=\).*/\1${custom_version}/" \
-        $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/main.cfg > $settings_file
+        $cluster_dir/main.cfg > $settings_file
 else
-    settings_file=$SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/main.cfg
+    settings_file=$cluster_dir/main.cfg
 fi
 
 . $settings_file
@@ -272,13 +270,13 @@ if [[ $SPACKLOT_ROOT != $spack_clone_path ]]; then
     fi
 
     # Add custom cluster source files if found
-    if [[ -d $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/src/spack ]]; then
-        cp -r $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/src/spack/* $spack_clone_path/
+    if [[ -d $cluster_dir/src/spack ]]; then
+        cp -r $cluster_dir/src/spack/* $spack_clone_path/
     fi
 
     # Copy any found licenses to Spack install
-    if [[ -d $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/licenses ]]; then
-        cp -rL $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/licenses $spack_clone_path/etc/spack/
+    if [[ -d $cluster_dir/licenses ]]; then
+        cp -rL $cluster_dir/licenses $spack_clone_path/etc/spack/
     fi
 
     # Modify permissions

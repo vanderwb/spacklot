@@ -1,0 +1,346 @@
+# *** Test HPC Software Stack Environment ***
+spack:
+  config:
+    install_tree:
+      root: '%INSTALLROOT%'
+      projections:
+        c: '{name}/{version}/{hash:4}'
+        ^c: '{name}/{version}/{compiler.name}/{compiler.version}/{hash:4}'
+        ^cxx: '{name}/{version}/{compiler.name}/{compiler.version}/{hash:4}'
+        ^fortran: '{name}/{version}/{compiler.name}/{compiler.version}/{hash:4}'
+        ^mpi: '{name}/{version}/{^mpi.name}/{^mpi.version}/{compiler.name}/{compiler.version}/{hash:4}'
+        all: '{name}/{version}/{hash:4}'
+      padded_length: 128
+    build_jobs: 4
+    test_stage: '%TMPROOT%/$user/temp/spack/%DEPLOYMENT%/tests'
+    source_cache: '%TMPROOT%/$user/temp/spack/cache'
+    misc_cache: '%TMPROOT%/$user/temp/spack/%DEPLOYMENT%/misc'
+    build_stage:
+    - %TMPROOT%/$user/temp/spack/%DEPLOYMENT%/builds
+    shared_linking:
+    # Turning bind setting on would be beneficial but vendor compilers do not
+    # seem to work with it! Avoid!
+      type: rpath
+      bind: false
+  include:
+  - name: constraints
+    path: %BASEROOT%/includes/constraints.yaml
+    optional: true
+  - name: cuda
+    path: %BASEROOT%/includes/cuda.yaml
+    when: env.get("SPACKLOT_GPU_TYPE") == "cuda"
+  packages:
+    all:
+      permissions:
+        read: world
+        write: user
+      target:
+      # Use generic architecture target for lowest common denominator on system
+      - x86_64_v3
+      prefer:
+      - +pic
+    aocc:
+      require:
+      - +license-agreed
+    binutils:
+      variants:
+      - +gas
+      - +gold
+      - +ld
+      - +libiberty
+    c:
+      buildable: true
+    cmake:
+      variants:
+      - +ownlibs
+    curl:
+      variants:
+      - +libidn2
+      - +libssh
+      - +libssh2
+      - +nghttp2
+      prefer:
+      - tls=openssl
+    cxx:
+      buildable: true
+    fftw:
+      variants:
+      - ~mpi
+    fortran:
+      buildable: true
+    gcc:
+      variants:
+      - +piclibs
+      - languages=c,c++,fortran
+    gdb:
+      variants:
+      - +gold
+      - +ld
+      - +lto
+      - +source-highlight
+      - +tui
+      - ~debuginfod
+      - ~python
+    git:
+      variants:
+      - +svn
+      - +tcltk
+    go-or-gccgo-bootstrap:
+      prefer:
+      - go-bootstrap
+      buildable: true
+    golang:
+      buildable: true
+    hdf5:
+      variants:
+      - +cxx
+      - +fortran
+      - +hl
+      - +map
+      - +szip
+      - ~mpi
+    intel-oneapi-runtime:
+      require:
+      - ^gcc-runtime@12.5.0
+    libzip:
+      prefer:
+      - +gnutls
+    llvm:
+      prefer:
+      - spec: +flang
+        when: '@19:'
+    mpich:
+      require:
+      - device=ch4
+      - pmi=pmi2
+      - +vci
+    mvapich:
+      variants:
+      - file_systems=nfs,ufs
+      - process_managers=auto
+    mvapich-plus:
+      variants:
+      - file_systems=nfs,ufs
+      - process_managers=auto
+    netcdf-c:
+      variants:
+      - +dap
+      - ~mpi
+      prefer:
+      - ~hdf4
+      - build_system=autotools
+      require:
+      - +nczarr_zip
+      - spec: build_type=Debug
+        when: +logging
+    nvhpc:
+      require:
+      - +blas
+      - +lapack
+      - ~mpi
+    openblas:
+      variants:
+      - +fortran
+      - threads=openmp
+    openmpi:
+      require:
+      - schedulers=tm
+      - +internal-pmix
+      - +romio
+      - romio-filesystem=nfs,ufs
+    pkgconfig:
+      prefer:
+      - pkg-config
+    python:
+      prefer:
+      - spec: '@3.11'
+      - +ssl
+    qt:
+      variants:
+      - +dbus
+      - +examples
+      - +opengl
+      - +webkit
+      require:
+      - +gtk
+      - +ssl
+      - '@5.14.2'
+    singularityce:
+      variants:
+      - ~suid
+    szip:
+      prefer:
+      - libszip
+    tbb:
+      prefer:
+      - intel-oneapi-tbb
+    zlib-api:
+      prefer:
+      - zlib-ng
+    zlib-ng:
+      require:
+      - +compat
+      - +new_strategies
+      - +shared
+  view:
+    baseenv:
+      root: '%BASEROOT%/view'
+      select: []
+      link_type: symlink
+      link: roots
+  modules:
+    default:
+      roots:
+        lmod: '%MODULESROOT%'
+      arch_folder: false
+      prefix_inspections:
+        bin:
+        - PATH
+        lib:
+        - HPC_LDFLAGS_{name}
+        lib64:
+        - HPC_LDFLAGS_{name}64
+        include:
+        - HPC_INC_{name}
+        man:
+        - MANPATH
+        share/man:
+        - MANPATH
+        lib/pkgconfig:
+        - PKG_CONFIG_PATH
+        lib64/pkgconfig:
+        - PKG_CONFIG_PATH
+      lmod:
+        +debug:
+          environment:
+            append_path:
+              HPC_SOURCE_DIRS: '{prefix}/share/{name}/src'
+        all:
+          environment:
+            set:
+              HPC_ROOT_{name}: '{prefix}'
+              HPC_HASH_{name}: '{hash}'
+              HPC_VERSION_{name}: '{version}'
+        apptainer:
+          environment:
+            prepend_path:
+              PATH: '{^squashfs.prefix}/bin'
+          filter:
+            exclude_env_vars:
+            - GOPATH
+        c:
+          environment:
+            set:
+              HPC_ID_COMPILER: '{name}-{version}'
+              HPC_ROOT_COMPILER: '{prefix}'
+        core_compilers:
+        - gcc@12.5.0
+        core_specs: []
+        defaults:
+        - netcdf~debug
+        - parallelio+mpi+shared
+        - esmf+mpi~debug
+        exclude: []
+        exclude_implicits: true
+        fftw+mpi:
+          conflict:
+          - fftw
+        fftw~mpi:
+          conflict:
+          - fftw-mpi
+        gcc:
+          environment:
+            set:
+              HPC_MFLAGS_PROFILE: -g1 -O3 -fno-inline -fno-optimize-sibling-calls
+        hash_length: 0
+        hdf5+mpi:
+          conflict:
+          - hdf5
+        hdf5~mpi:
+          conflict:
+          - hdf5-mpi
+        hierarchy:
+        - mpi
+        intel-oneapi-compilers:
+          filter:
+            exclude_env_vars:
+            - HPC_ROOT_INTEL_ONEAPI_COMPILERS
+            - HPC_HASH_INTEL_ONEAPI_COMPILERS
+          environment:
+            set:
+              INTEL_COMPILER_TYPE: ONEAPI
+              INTEL_PATH: '{prefix}'
+              INTEL_VERSION: '{version}'
+              I_MPI_CC: icx
+              I_MPI_CXX: icpx
+              I_MPI_F77: ifx
+              I_MPI_F90: ifx
+              I_MPI_FC: ifx
+              MPICH_CC: icx
+              MPICH_CXX: icpx
+              MPICH_FC: ifx
+              HPC_ID_COMPILER: intel-{version}
+              HPC_MFLAGS_PROFILE: -debug minimal -O3 -fno-inline -no-ip -no-ipo -fno-omit-frame-pointer -fno-optimize-sibling-calls
+              HPC_ROOT_INTEL: '{prefix}'
+              HPC_HASH_INTEL: '{hash}'
+              OMPI_CC: icx
+              OMPI_CXX: icpx
+              OMPI_F77: ifx
+              OMPI_FC: ifx
+        llvm+clang:
+          filter:
+            exclude_env_vars:
+            - HPC_INC_LLVM
+            - HPC_LDFLAGS_LLVM
+            - HPC_ROOT_LLVM
+            - HPC_HASH_LLVM
+          environment:
+            set:
+              HPC_ID_COMPILER: clang-{version}
+              HPC_INC_CLANG: '{prefix}/include'
+              HPC_LDFLAGS_CLANG: '{prefix}/lib'
+              HPC_ROOT_CLANG: '{prefix}'
+              HPC_HASH_CLANG: '{hash}'
+        matlab:
+          environment:
+            set:
+              MW_FEATURE_MathworksServiceHostIsOnByDefault: '0'
+        mpi:
+          environment:
+            set:
+              HPC_ID_MPI: '{name}-{version}'
+              HPC_ROOT_MPI: '{prefix}'
+        nvhpc:
+          environment:
+            set:
+              HPC_MFLAGS_PROFILE: -g -O3 -Meh_frame -Mnoautoinline
+              NVIDIA_PATH: '{prefix}'
+              NVIDIA_VERSION: '{version}'
+            prepend_path:
+              LD_LIBRARY_PATH: '{prefix}/Linux_x86_64/{version}/compilers/lib'
+        openmpi:
+          environment:
+            set:
+              # Open MPI puts Fortran modules in an atypical place
+              # https://github.com/open-mpi/ompi/issues/12600
+              HPC_INC_OPENMPIMOD: '{prefix}/lib'
+              # https://github.com/open-mpi/ompi/issues/9647
+              OMPI_MCA_rmaps_default_mapping_policy: :hwtcpus
+              OMPI_MCA_shmem_mmap_enable_nfs_warning: '0'
+              PRTE_MCA_prte_tmpdir_base: /tmp
+            prepend_path:
+              LD_LIBRARY_PATH: '{prefix}/lib'
+        projections:
+          all: '{name}/{version}'
+          fftw+mpi: fftw-mpi/{version}
+          hdf5+mpi build_type=Debug: hdf5-mpi/{version}-debug
+          hdf5+mpi: hdf5-mpi/{version}
+          intel-oneapi-compilers: intel/{version}
+          cppflags=-g: '{name}/{version}-debug'
+          build_type=Debug: '{name}/{version}-debug'
+          +debug: '{name}/{version}-debug'
+  concretizer:
+    unify: false
+    reuse: true
+  mirrors: {}
+  toolchains: {}
