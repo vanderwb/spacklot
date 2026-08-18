@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   22:08, 17 Aug 2026
+#   Last Revised:   09:36, 18 Aug 2026
 #
 
 set -e
@@ -134,6 +134,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             export SPACKLOT_DEPLOYMENT_NAME=$1
+
+            # Check for mandatory cluster components
+            for component in main.cfg spack.yaml; do
+                if [[ ! -e $component ]]; then
+                    tsecho "Error: Cluster $1 missing required component $component"
+                    exit 1
+                fi
+            done
             ;;
     esac
 
@@ -346,7 +354,7 @@ if [[ $SPACKLOT_ROOT != $spack_clone_path ]]; then
             fi
         elif [[ -n $gpg_key ]]; then
             tsecho "Trusting existing GPG key"
-            spack gpg trust $gpg_key
+            spack gpg trust -y $gpg_key
             echo
         fi
     fi
@@ -403,21 +411,14 @@ if [[ -n $custom_version ]]; then
     sed -i "s/\(SPACKLOT_CLUSTER_VERSION=\).*/\1${custom_version}/" $SPACKLOT_ENV_BUILD/main.cfg
 fi
 
-cp clusters/$QSYS/packages.cfg $SPACKLOT_ENV_BUILD
-cp -r templates $SPACKLOT_ENV_BUILD
-
-if [[ -d clusters/$SPACKLOT_DEPLOYMENT_NAME/templates ]]; then
-    cp -r clusters/$SPACKLOT_DEPLOYMENT_NAME/templates $SPACKLOT_ENV_BUILD
-fi
-
-if [[ -e clusters/$SPACKLOT_DEPLOYMENT_NAME/postprocess ]]; then
-    cp -r -L clusters/$SPACKLOT_DEPLOYMENT_NAME/postprocess $SPACKLOT_ENV_BUILD
-fi
-
-# Copy any YAML includes
-if [[ -d $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/includes ]]; then
-    cp -r -L $SPACKLOT_DIR/clusters/$SPACKLOT_DEPLOYMENT_NAME/includes $SPACKLOT_ENV_BUILD
-fi
+# Copy components that may be optional
+for component in packages.cfg templates postprocess includes; do
+    if [[ -e clusters/$SPACK_DEPLOYMENT_NAME/$component ]]; then
+        cp -r -L clusters/$SPACKLOT_DEPLOYMENT_NAME/$component $SPACKLOT_ENV_BUILD
+    else
+        tsecho " -> Skipping optional component $PCOL$component$DCOL"
+    fi
+done
 
 # Make cluster-specific substitutions in YAML FILES
 for yaml_file in $SPACKLOT_ENV_BUILD/spack.yaml $(ls $SPACKLOT_ENV_BUILD/includes/* 2> /dev/null); do
@@ -519,32 +520,36 @@ done
 #
 
 if [[ ! $skip_steps =~ " "(packages|all)" "  ]]; then
-    tsecho "Building packages in build environment"
-    echo
-
-    # Build packages from source in build environment
-    cd $SPACKLOT_ENV_BUILD
-    bin/install_packages
-
-    # Run script to populate the binary build_cache
-    if [[ $SPACKLOT_PAD_LENGTH != 0 ]]; then
-        tsecho "Populating build cache with package binaries"
+    if [[ -f packages.cfg ]]; then
+        tsecho "Building packages in build environment"
         echo
-        bin/populate_build_cache
+
+        # Build packages from source in build environment
+        cd $SPACKLOT_ENV_BUILD
+        bin/install_packages
+
+        # Run script to populate the binary build_cache
+        if [[ $SPACKLOT_PAD_LENGTH != 0 ]]; then
+            tsecho "Populating build cache with package binaries"
+            echo
+            bin/populate_build_cache
+        else
+            tsecho "Skipping build cache due to pad length = 0"
+        fi
+
+        # Create modules in build environment
+        if [[ -n $SPACKLOT_ROOT_MODULES ]]; then
+            tsecho "Generating modules in build environment"
+            spack module lmod refresh -y
+        fi
+
+        # Some clusters (e.g., Cray) need to run extra commands to prep environment
+        if [[ -d $SPACKLOT_ENV_BUILD/postprocess ]]; then
+            tsecho "Running postprocessing on the build environment"
+            $SPACKLOT_ENV_BUILD/bin/postprocess
+        fi
     else
-        tsecho "Skipping build cache due to pad length = 0"
-    fi
-
-    # Create modules in build environment
-    if [[ -n $SPACKLOT_ROOT_MODULES ]]; then
-        tsecho "Generating modules in build environment"
-        spack module lmod refresh -y
-    fi
-
-    # Some clusters (e.g., Cray) need to run extra commands to prep environment
-    if [[ -f $SPACKLOT_ENV_BUILD/bin/postprocess ]]; then
-        tsecho "Running postprocessing on the build environment"
-        $SPACKLOT_ENV_BUILD/bin/postprocess
+        tsecho "Skipping packages step as cluster has no packages.cfg"
     fi
 fi
 
