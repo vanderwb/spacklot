@@ -28,10 +28,10 @@ deployment, you will need to run as the privileged user.
 git clone 
 ```
 
-!!! Note
-    The above command assumes SSH-key usage, which you will probably want to
-    utilize over the HTTPS method as unattended GitHub commands are integral to
-    many workflows in these scripts. See below for pointers on setting this up.
+> [!TIP]
+> The above command assumes SSH-key usage, which you will probably want to
+> utilize over the HTTPS method as unattended GitHub commands are integral to
+> many workflows in these scripts. See below for pointers on setting this up.
 
 #### GitHub SSH keys
 
