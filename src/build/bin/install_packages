@@ -8,7 +8,7 @@
 #           and any other packages that need it
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   14:54, 29 Jun 2026
+#   Last Revised:   20:50, 14 Sep 2026
 #
 
 
@@ -279,7 +279,7 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-spec_cmd="spack spec -I -N -t -L"
+spec_cmd="spack spec -I -N -t -l"
 build_cmd="spack install --include-build-deps"
 
 function handle_interrupt {
@@ -567,7 +567,7 @@ function compiler_checks {
     if [[ $current_comps != *${compiler_config[comp_spec]}* ]] || [[ ${compiler_config[register]} == replace ]]; then
         tsecho "Registering ${compiler_config[comp_spec]} as a compiler in spack.yaml"
 
-        if [[ ${SPACKLOT_API_VERSION:-0} == 0* ]]; then
+        if [[ $SPACKLOT_PACKAGE_API_VERSION == v1.0 ]]; then
             comp_template=$SPACKLOT_ENV_BUILD/templates/compilers/${compiler_config[comp_spec]%%@*}
 
             if [[ ! -f $comp_template ]]; then
@@ -598,7 +598,7 @@ function compiler_checks {
             sed -i 's/^\(  compilers:\)[ ]*\[\]/\1/' $SPACK_ENV/spack.yaml
             block_end=$(expr $(sed -n "1,/^  '*compilers[:']*/d;/^  [^- ].*/ {=;q}" spack.yaml) - 1)
             . $comp_template | sed -i "$block_end r /dev/stdin" $SPACK_ENV/spack.yaml
-        elif [[ $SPACKLOT_API_VERSION == 1* ]]; then
+        elif [[ $SPACKLOT_PACKAGE_API_VERSION == v2.* ]]; then
             if [[ $current_comps == *${compiler_config[comp_spec]}* ]]; then
                 tsecho "(replacing existing compiler ${compiler_config[comp_spec]})"
                 eval spack compiler remove --scope env:$SPACK_ENV ${compiler_config[comp_spec]}
@@ -712,7 +712,7 @@ function check_spec {
             config[cache]=no
         fi
 
-        if [[ ${SPACKLOT_API_VERSION:-0} == 0* ]]; then
+        if [[ $SPACKLOT_PACKAGE_API_VERSION == v1.0 ]]; then
             if [[ $comp_spec == intel-oneapi-compilers-classic* ]]; then
                 comp_spec="${comp_spec/intel-oneapi-compilers-classic/intel}"
             elif [[ $comp_spec == intel-oneapi-compilers* ]]; then
@@ -807,7 +807,7 @@ function check_spec {
                 if [[ $? == 0 ]]; then
                     set -e
 
-                    if [[ $SPACKLOT_SPEC_FORMAT == new ]]; then
+                    if [[ $SPACKLOT_SPACK_API_VERSION -ge 1 ]]; then
                         spec_hash=$(head -1 <<< "$spack_spec_out" | awk '{print $2}')
                     else
                         spec_hash=$(grep -A2 ^Concretized <<< "$spack_spec_out" | tail -n1 | awk '{print $2}')
@@ -965,21 +965,34 @@ function clear_added_specs {
     if [[ -n $install_queue ]]; then
         while read queued_hash; do
             queued_spec=$(awk -F'|' '{print $NF}' <<< ${queue_config[$queued_hash]})
-            if ! grep -q -e "Successful.*$queued_hash"      \
-                    -e "^\[+\].*external .*$queued_hash" ${log_installs}*; then
-                # If we can't find it by hash, it may still have been "installed" by virtue
-                # of existing in an upstream, so we have to search by short hash
-                if ! grep -q -e "^\[+\].*/${queued_hash:0:4}$" ${log_installs}*; then
+
+            if [[ $SPACKLOT_SPACK_API_VERSION -ge 3 ]]; then
+                if ! grep -q "^\[[+e]\] $queued_hash" ${log_installs}*; then
                     exit_mode=${exit_mode:-2}
                     tsecho "Removing spec $queued_spec (hash /$queued_hash); not found in install logs"
                     (trap '' SIGINT; spack python $my_dir/tools/remove_spec.py "$queued_spec") &
                     wait $!
                     continue
                 else
-                    tsecho "Keeping upstream spec $queued_spec (hash /$queued_hash)." 2
+                    tsecho "Keeping successfully installed spec $queued_spec (hash /$queued_hash)." 2
                 fi
             else
-                tsecho "Keeping successfully installed spec $queued_spec (hash /$queued_hash)." 2
+                if ! grep -q -e "Successful.*$queued_hash"      \
+                        -e "^\[+\].*external .*$queued_hash" ${log_installs}*; then
+                    # If we can't find it by hash, it may still have been "installed" by virtue
+                    # of existing in an upstream, so we have to search by short hash
+                    if ! grep -q -e "^\[+\].*/${queued_hash:0:4}$" ${log_installs}*; then
+                        exit_mode=${exit_mode:-2}
+                        tsecho "Removing spec $queued_spec (hash /$queued_hash); not found in install logs"
+                        (trap '' SIGINT; spack python $my_dir/tools/remove_spec.py "$queued_spec") &
+                        wait $!
+                        continue
+                    else
+                        tsecho "Keeping upstream spec $queued_spec (hash /$queued_hash)." 2
+                    fi
+                else
+                    tsecho "Keeping successfully installed spec $queued_spec (hash /$queued_hash)." 2
+                fi
             fi
 
             add_date=$(date +%FT%T) add_spec_to_registry "${queue_config[$queued_hash]}" $SPACK_ENV/registry
@@ -1082,12 +1095,19 @@ function install_specs {
             my_log=${log_installs}.$n
         fi
 
-        (trap '' SIGINT; $my_build_cmd |& tee -a $my_log |                                          \
+        # *** Install command happens here ***
+        if [[ $SPACKLOT_SPACK_API_VERSION -ge 3 ]]; then
+            (trap '' SIGINT; $my_build_cmd |& tee -a $my_log |                                      \
+                sed -u "s/^\(==> Error:.*\)/$RCOL\1$DCOL/; s/^/$prefix/"; exit ${PIPESTATUS[0]}) &
+        else
+            (trap '' SIGINT; $my_build_cmd |& tee -a $my_log |                                      \
                 sed -u "s/^\(==> Error:.*\)/$RCOL\1$DCOL/; s/^/$prefix/" |                          \
                 (grep --line-buffered -e "Executing phase" -e "Successfully installed"              \
                 -e "already installed" -e " Total: " -e " from binary cache" -e " Error: "          \
                 -e "^See build log" -e "spack-build-out.txt" -e "Installing" |                      \
                 grep -v "Skipping external package"); exit ${PIPESTATUS[0]}) &
+        fi
+
         my_pid=$!
         shell_pids="$shell_pids $my_pid "
 
@@ -1362,6 +1382,8 @@ Spack environment   = $SPACK_ENV
 Package manifest    = $manifest_file
 Spack version       = $spack_commit
 Concretizer reuse   = $reuse_packages
+Spack API           = $SPACKLOT_SPACK_API_VERSION
+Package API         = $SPACKLOT_PACKAGE_API_VERSION
 
 Spack install tasks = ${num_tasks:=${#build_hosts[@]}}
 Build jobs per task = $build_jobs
@@ -1375,7 +1397,7 @@ Log verbosity       = ${log_verbosity:-0}
 EOF
 
 echo "Querying current root and installed packages ..."
-start_hashes=$(spack find -L --no-groups -r | awk '$1 ~ /\[[\^e+]\]/ {print $2}' | xargs)
+start_hashes=$(spack find -l --no-groups -r | awk '$1 ~ /\[[\^e+]\]/ {print $2}' | xargs)
 start_hashes_all=$(spack find --format '{hash}' | xargs)
 initialize_registry
 

@@ -101,7 +101,7 @@ spack:
       - ~mpi
     intel-oneapi-runtime:
       require:
-      - ^gcc-runtime@12.5.0
+      - ^gcc-runtime@%SYSTEMGCC%
     libzip:
       prefer:
       - +gnutls
@@ -234,7 +234,7 @@ spack:
               HPC_ID_COMPILER: '{name}-{version}'
               HPC_ROOT_COMPILER: '{prefix}'
         core_compilers:
-        - gcc@12.5.0
+        - gcc@%SYSTEMGCC%
         core_specs: []
         defaults:
         - netcdf~debug

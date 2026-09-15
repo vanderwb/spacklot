@@ -66,7 +66,7 @@ field_list=(    spec_hash install_date spack_commit "config[maxjobs]" "config[tr
                 "config[cache]" "config[publish]" "config[register]" "config[source]"
                 raw_spec spec   )
 
-field_widths[spec_hash]=32              field_labels[spec_hash]="Package Hash"
+field_widths[spec_hash]=12              field_labels[spec_hash]="Package Hash"
 field_widths[install_date]=19           field_labels[install_date]="Date Installed"
 field_widths[spack_commit]=40           field_labels[spack_commit]="Spack Git Repo Commit"
 field_widths["config[maxjobs]"]=4       field_labels["config[maxjobs]"]="Jobs"
@@ -212,5 +212,32 @@ elif [[ -z $SPACK_ENV ]]; then
 
     if grep -q -E '^ +specs: +\[' $SPACK_ENV/spack.yaml; then
         spack python $my_dir/tools/fix_specs.py
+    fi
+
+    tsecho "Checking Spack version against API ancestors" ${quiet_mode:+9999}
+
+    cd $SPACKLOT_ROOT_DEPLOYMENT/spack
+
+    if git merge-base --is-ancestor 63962ed90680d339004305075da272ae93c04a41 HEAD; then
+        # Spack v1.2 changes (new package installer)
+        export SPACKLOT_SPACK_API_VERSION=3
+    elif git merge-base --is-ancestor 73eaea13f381e3495299284856fd02a64e1d154c HEAD; then
+        # Spack v1.0 changes (new package API)
+        export SPACKLOT_SPACK_API_VERSION=2
+    elif git merge-base --is-ancestor 6f948eb847c46a9caea852d3ffffd9cd4575dacc HEAD; then
+        # Spack 0.23.3 changes (concretization format change)
+        export SPACKLOT_SPACK_API_VERSION=1
+    else
+        export SPACKLOT_SPACK_API_VERSION=0
+    fi
+
+    cd - > /dev/null
+
+    tsecho "Checking builtin package repo API version"
+
+    if [[ $SPACKLOT_SPACK_API_VERSION -ge 2 ]]; then
+        export SPACKLOT_PACKAGE_API_VERSION=$(spack repo list | awk '$2 == "builtin" { print $3 }')
+    else
+        export SPACKLOT_PACKAGE_API_VERSION=v1.0
     fi
 fi

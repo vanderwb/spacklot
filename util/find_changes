@@ -5,7 +5,7 @@
 #   incorporating those changes to this repo.
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   15:49, 17 Aug 2026
+#   Last Revised:   20:56, 14 Sep 2026
 #
 
 my_root="$( cd "$(dirname "$0")"/.. ; pwd )"
@@ -69,6 +69,7 @@ elif [[ ! -f $env_path/main.cfg ]]; then
 else
     . $env_path/main.cfg
     cluster=${cluster:-$SPACKLOT_CLUSTER}
+    cluster_root=clusters/$SPACKLOT_COLLECTION/$cluster
 fi
 
 cat << EOF
@@ -77,12 +78,13 @@ cat << EOF
 
 Comparing changes from active deployment
 
-Path:   $env_path
-Host:   $cluster
-Type:   $SPACKLOT_DEPLOYMENT_TYPE
+Environment Path:   $env_path
+Cluster Name:       $cluster
+Collection:         $SPACKLOT_COLLECTION
+Deployment Type:    $SPACKLOT_DEPLOYMENT_TYPE
 
-Output mode:    $output_mode
-Display diffs:  ${diff_mode:=false}
+Output mode:        $output_mode
+Display diffs:      ${diff_mode:=false}
 
 ============================================================
 
@@ -95,10 +97,10 @@ path_map[templates/modules]=templates/modules
 path_map[templates/compilers]=templates/compilers
 path_map[src/build/bin]=bin
 path_map[src/build/bin/tools]=bin/tools
-path_map[clusters/$cluster]=.
-path_map[clusters/$cluster/postprocess]=postprocess
-path_map[clusters/$cluster/spack.yaml]=templates/yaml/spack.yaml
-path_map[clusters/$cluster/includes]=templates/yaml/includes
+path_map[$cluster_root]=.
+path_map[$cluster_root/postprocess]=postprocess
+path_map[$cluster_root/spack.yaml]=templates/yaml/spack.yaml
+path_map[$cluster_root/includes]=templates/yaml/includes
 
 cd $my_root
 
