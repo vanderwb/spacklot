@@ -1,3 +1,8 @@
+# This has to happen in the init script on Ubuntu/Debian bash, as
+# /etc/bash.bashrc is called even if --rcfile is specified, which
+# overrides our PS1 setting outside of the subshell!
+export PS1="\[\e[1;34m\][clean]\[\e[0m\] ${SPACKLOT_PROMPT:-\W$ }"
+
 # If TMPDIR is unset, this script seems to trigger infinite recursion
 # Here is a hacky workaround until root cause can be determined.
 if [[ -z $TMPDIR ]]; then

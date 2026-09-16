@@ -36,7 +36,6 @@ fi
 SHELL_INIT="/bin/bash --noprofile"
 
 if [[ $# -eq 0 ]]; then
-    env_args+=( PS1="\[\e[1;34m\][clean]\[\e[0m\] ${SPACKLOT_PROMPT:-\W$ }" )
     SHELL_INIT="$SHELL_INIT --rcfile $SPACKLOT_ROOT/share/spacklot/init.sh"
 else
     SHELL_INIT="BASH_ENV=$SPACKLOT_ROOT/share/spacklot/init.sh $SHELL_INIT --norc"

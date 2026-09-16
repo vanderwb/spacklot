@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   21:06, 14 Sep 2026
+#   Last Revised:   09:36, 16 Sep 2026
 #
 
 set -e
@@ -259,18 +259,16 @@ if [[ $SPACKLOT_ROOT != $spack_clone_path ]]; then
     # Copy our scripts into the clone
     cp -r $SPACKLOT_DIR/src/spack/* $spack_clone_path
 
-    # Set prompt label in clean_bash script
-    if [[ -f $spack_clone_path/bin/clean_bash ]]; then
-        sed -i "s/\[clean\]/\[${SPACKLOT_CLUSTER}-${SPACKLOT_CLUSTER_VERSION}\]/" $spack_clone_path/bin/clean_bash
+    # Set prompt label in init script
+    sed -i "s/\[clean\]/\[${SPACKLOT_CLUSTER}-${SPACKLOT_CLUSTER_VERSION}\]/" $spack_clone_path/share/spacklot/init.sh
 
-        # If exists, use Spack utils repo for Python
-        if [[ -d $SPACKLOT_PYTHON_ROOT ]]; then
-            sed -i "s|^\(SPACKLOT_PYTHON_ROOT=\).*|\1$SPACKLOT_PYTHON_ROOT|" $spack_clone_path/share/spacklot/init.sh
-        fi
+    # If exists, use Spack utils repo for Python
+    if [[ -d $SPACKLOT_PYTHON_ROOT ]]; then
+        sed -i "s|^\(SPACKLOT_PYTHON_ROOT=\).*|\1$SPACKLOT_PYTHON_ROOT|" $spack_clone_path/share/spacklot/init.sh
+    fi
 
-        if [[ -n $SPACKLOT_SPACK_PYDIR ]]; then
-            sed -i "/^env_args=/a SPACKLOT_SPACK_PYDIR=$SPACKLOT_SPACK_PYDIR" $spack_clone_path/bin/clean_bash
-        fi
+    if [[ -n $SPACKLOT_SPACK_PYDIR ]]; then
+        sed -i "/^env_args=/a SPACKLOT_SPACK_PYDIR=$SPACKLOT_SPACK_PYDIR" $spack_clone_path/bin/clean_bash
     fi
 
     # Add custom cluster source files if found
