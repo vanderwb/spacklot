@@ -85,6 +85,8 @@ else
     mirror=${mirror:-$SPACKLOT_MIRROR_LOCAL}
 fi
 
+read mirror_name mirror_status <<< $(spack mirror ls | grep $mirror | awk -F[\]\[] '{ print $1 $2 }')
+
 # Job tracking by PIDs
 declare -A job_pids
 
@@ -110,7 +112,12 @@ function wait_for_jobs {
 }
 
 tsecho "Using up to $max_jobs threads to populate cache"
-tsecho "Pushing to cache: ${PCOL}${mirror}${DCOL}"
+tsecho "Pushing to cache: ${GCOL}${mirror}${DCOL}"
+
+if [[ $mirror_status != *b* ]]; then
+    tsecho "Setting mirror mode to [${PCOL}sb${DCOL}]"
+    spack mirror set --type binary --type source $mirror_name
+fi
 
 if [[ $clobber_list == all ]]; then
     cache_cmd+=" --force"
@@ -186,7 +193,7 @@ while read hash triplet; do
                 fi
             elif [[ " ${!SPACKLOT_LINKED_PACKAGES[@]} " == *" $name "* ]]; then
                 tsecho " >> Force pushing linked package ${PCOL}${SPACKLOT_LINKED_PACKAGES[$name]}$DCOL"
-                linked_hash=$(spack find -Ld --format "{name}" /$hash | awk -v pkg=${SPACKLOT_LINKED_PACKAGES[$name]} '$2 == pkg {print $1}')
+                linked_hash=$(spack find -ld --format "{name}" /$hash | awk -v pkg=${SPACKLOT_LINKED_PACKAGES[$name]} '$2 == pkg {print $1}')
 
                 if [[ -n $linked_hash ]]; then
                     log_cmd "$cache_cmd --only=package --force $mirror /$linked_hash" >> $log_file
@@ -211,5 +218,8 @@ while read hash triplet; do
 done <<< "$pkg_list"
 
 wait_for_jobs 1
+
+tsecho "Updating buildcache index"
+spack buildcache update-index $mirror_name > /dev/null
 
 update_log_pointers cache

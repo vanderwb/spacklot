@@ -6,7 +6,7 @@
 #       and important system settings.
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   14:23, 18 Aug 2026
+#   Last Revised:   23:08, 17 Sep 2026
 #
 
 util_path=$SPACK_ENV/util
@@ -18,7 +18,7 @@ export INSTALLPATH_ROOT=$pkg_root
 export MODULEPATH_ROOT=$module_root
 
 # Lmod configuration
-export LMOD_SYSTEM_NAME=${SPACKLOT_LMOD_SYSTEM:-$SPACKLOT_HOST}
+export LMOD_SYSTEM_NAME=${SPACKLOT_LMOD_SYSTEM:-$SPACKLOT_CLUSTER}
 export LMOD_SYSTEM_DEFAULT_MODULES="$SPACKLOT_DEFAULT_MODULES"
 
 case "\$MODULEPATH" in
@@ -77,7 +77,7 @@ setenv INSTALLPATH_ROOT $pkg_root
 setenv MODULEPATH_ROOT $module_root
 
 # Lmod configuration
-setenv LMOD_SYSTEM_NAME ${SPACKLOT_LMOD_SYSTEM:-$SPACKLOT_HOST}
+setenv LMOD_SYSTEM_NAME ${SPACKLOT_LMOD_SYSTEM:-$SPACKLOT_CLUSTER}
 setenv LMOD_SYSTEM_DEFAULT_MODULES "$SPACKLOT_DEFAULT_MODULES"
 
 if ( ! \$?MODULEPATH ) then

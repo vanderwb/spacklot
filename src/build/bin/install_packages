@@ -8,7 +8,7 @@
 #           and any other packages that need it
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   20:50, 14 Sep 2026
+#   Last Revised:   09:28, 18 Sep 2026
 #
 
 
@@ -42,7 +42,7 @@ Options
     -l, --host-list HOSTS   specify build hosts
                             (comma-separated list, "cluster", or "pbs")
     -n, --num-tasks N       # of concurrent calls to spack install (default 1)
-                            if negative, will scale down if npkgs < ntasks
+                            if > # of build hosts, will cap at that value
     -p, --package-limit N   max number of packages to be installed at once
                             (1 for sequential)
     -s, --skip-checks       don't perform certain environment sanity checks
@@ -75,7 +75,8 @@ The following options are supported by default, section, and package config:
                   indicated package(s).
     preferred   - If set to yes, enables a check to see whether Spack
                   concretizer is using the specified "preferred" version of the
-                  package. Defaults to yes.
+                  package. Defaults to yes. This setting can also be configured
+                  via SPACKLOT_USE_PREFERRED=(true/false) in main.cfg.
     source      - If set to "stage", the staging source code is kept after
                   success. If set to "install", the source code is installed into
                   the package prefix. Defaults to not keeping source.
@@ -216,6 +217,10 @@ manifest_file=$SPACK_ENV/packages.cfg
 build_jobs=$(spack config get config | sed -n 's/^[ ]*build_jobs: \(.*\)/\1/p')
 header_cmd='tee $log_installs'
 
+if [[ $SPACKLOT_USE_PREFERRED == false ]]; then
+    ignore_preferred=true
+fi
+
 # Handle user input
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -253,12 +258,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         -n|--num-tasks)
             num_tasks=$2
-
-            if [[ $num_tasks -lt 0 ]]; then
-                num_tasks=$((num_tasks * -1))
-                shrink_tasks=true
-            fi
-
             shift
             ;;
         -p|--package-limit)
@@ -480,6 +479,7 @@ function prepare_spec {
         fi
     fi
 
+    spec="$(sed -r "s/@%SYS%/@${sys_gcc}/g" <<< "$spec")"
     spec="$(sed -r "s/%SYS%/%gcc@${sys_gcc}/g" <<< "$spec")"
 
     # Substitute compiler/mpi-specific modifier flags
@@ -533,6 +533,10 @@ function prepare_spec {
 
     if [[ ${config[type]} == compiler ]] && [[ ${config[build]} != false ]]; then
         config[register]=${config[register]:-yes}
+    fi
+
+    if [[ -n ${config[toolchain]} ]]; then
+        config[toolchain]="$(sed -r "s/%SYS%/${sys_gcc//.}/g" <<< "${config[toolchain]}")"
     fi
 
     if [[ ${#queue_config[@]} -gt 0 ]] && [[ $start_installs != true ]]; then
@@ -778,10 +782,10 @@ function check_spec {
                 '$(NF-1) == spec {print $0}')
 
         # Use Spack commands to reformat into canonical Spec ordering
-        parse_cmd="str(Spec('$(sed "s/'/\\\'/g" <<< $spec)'))"
+        parse_cmd="parse_specs('$(sed "s/'/\\\'/g" <<< $spec)')[0]"
 
         if [[ -z $registry_data ]]; then
-            parsed_spec="$(spack python -c "from spack.spec import Spec; print($parse_cmd)")"
+            parsed_spec="$(spack python -c "from spack.cmd import parse_specs; print($parse_cmd)")"
             spec="$parsed_spec"
             registry_data=$(sed -n '3,$ s/ *| */|/gp' $SPACK_ENV/registry | awk -F\| -v spec="$spec"      \
                     '$NF == spec {print $0}')
@@ -798,7 +802,7 @@ function check_spec {
             if [[ $dry_run != true ]]; then
                 # Get parsed spec if we haven't already...
                 if [[ -z $parsed_spec ]]; then
-                    spec="$(spack python -c "from spack.spec import Spec; print($parse_cmd)")"
+                    spec="$(spack python -c "from spack.cmd import parse_specs; print($parse_cmd)")"
                 fi
 
                 set +e
@@ -841,7 +845,7 @@ function check_spec {
                             clear_added_specs 1
                             exit 1
                         fi
-                    elif [[ ${config[preferred]:-yes} == yes ]]; then
+                    elif [[ $SPACKLOT_USE_PREFERRED != false ]] && [[ ${config[preferred]:-yes} == yes ]]; then
                         given_version=$(sed 's/\([^^%]*\).*/\1/' <<< $spec | sed -n 's/.*@\([^~+ ]*\).*/\1/p')
 
                         if [[ -z $given_version ]]; then
@@ -860,6 +864,8 @@ function check_spec {
                             else
                                 unset version_message
                             fi
+                        else
+                            unset version_message
                         fi
                     fi
 
@@ -966,33 +972,14 @@ function clear_added_specs {
         while read queued_hash; do
             queued_spec=$(awk -F'|' '{print $NF}' <<< ${queue_config[$queued_hash]})
 
-            if [[ $SPACKLOT_SPACK_API_VERSION -ge 3 ]]; then
-                if ! grep -q "^\[[+e]\] $queued_hash" ${log_installs}*; then
-                    exit_mode=${exit_mode:-2}
-                    tsecho "Removing spec $queued_spec (hash /$queued_hash); not found in install logs"
-                    (trap '' SIGINT; spack python $my_dir/tools/remove_spec.py "$queued_spec") &
-                    wait $!
-                    continue
-                else
-                    tsecho "Keeping successfully installed spec $queued_spec (hash /$queued_hash)." 2
-                fi
+            if spack find -lr /$queued_hash 2> /dev/null | grep -q $queued_hash; then
+                tsecho "Keeping successfully installed spec $queued_spec (hash /$queued_hash)." 2
             else
-                if ! grep -q -e "Successful.*$queued_hash"      \
-                        -e "^\[+\].*external .*$queued_hash" ${log_installs}*; then
-                    # If we can't find it by hash, it may still have been "installed" by virtue
-                    # of existing in an upstream, so we have to search by short hash
-                    if ! grep -q -e "^\[+\].*/${queued_hash:0:4}$" ${log_installs}*; then
-                        exit_mode=${exit_mode:-2}
-                        tsecho "Removing spec $queued_spec (hash /$queued_hash); not found in install logs"
-                        (trap '' SIGINT; spack python $my_dir/tools/remove_spec.py "$queued_spec") &
-                        wait $!
-                        continue
-                    else
-                        tsecho "Keeping upstream spec $queued_spec (hash /$queued_hash)." 2
-                    fi
-                else
-                    tsecho "Keeping successfully installed spec $queued_spec (hash /$queued_hash)." 2
-                fi
+                exit_mode=${exit_mode:-2}
+                tsecho "Removing spec $queued_spec (hash /$queued_hash); not found among installed roots"
+                (trap '' SIGINT; spack python $my_dir/tools/remove_spec.py "$queued_spec") &
+                wait $!
+                continue
             fi
 
             add_date=$(date +%FT%T) add_spec_to_registry "${queue_config[$queued_hash]}" $SPACK_ENV/registry
@@ -1046,14 +1033,12 @@ function install_specs {
 
     # Install the package and view pertinent log information
     build_steps="$spec_build_cmd"
-    build_tasks=0
 
     if [[ -n $install_queue ]]; then
         while read queued_hash; do
             if [[ $queued_hash != $spec_hash ]]; then
                 queued_spec=$(awk -F'|' '{print $NF}' <<< ${queue_config[$queued_hash]})
                 build_steps="spack add ${queued_spec}${SEP}$build_steps"
-                build_tasks=$((build_tasks+1))
             fi
         done < <(tr '|' '\n' <<< "$install_queue" | tac)
     fi
@@ -1063,14 +1048,8 @@ function install_specs {
     spack concretize -j ${build_jobs:-1} -q > /dev/null
     shell_pids= spack_status=0 needs_concretization= task_limit=$num_tasks
 
-    if [[ ${shrink_tasks:-false} == true ]]; then
-        if [[ $build_tasks -lt $num_tasks ]]; then
-            if [[ $build_tasks -gt 0 ]]; then
-                task_limit=$build_tasks
-            else
-                task_limit=1
-            fi
-        fi
+    if [[ ${#build_hosts[@]} -lt $num_tasks ]]; then
+        task_limit=${#build_hosts[@]}
     fi
 
     # Delayed-trapping won't work with set -e and we also enable job control
@@ -1079,7 +1058,7 @@ function install_specs {
 
     # If interrupt signal is active, Spack will somehow intercept; so disable in a subshell
     for n in $(seq $task_limit); do
-        prefix=" $FCOL[$n:${build_hosts[$h]}]$DCOL "
+        prefix=" $FCOL[$n:${build_hosts[$h]}] >> $DCOL"
 
         if [[ $my_host == ${build_hosts[$h]} ]]; then
             my_build_cmd=$spec_build_cmd
@@ -1385,7 +1364,7 @@ Concretizer reuse   = $reuse_packages
 Spack API           = $SPACKLOT_SPACK_API_VERSION
 Package API         = $SPACKLOT_PACKAGE_API_VERSION
 
-Spack install tasks = ${num_tasks:=${#build_hosts[@]}}
+Spack install tasks = ${num_tasks:=1}
 Build jobs per task = $build_jobs
 Build host(s)       = ${build_hosts[@]}
 

@@ -218,10 +218,10 @@ elif [[ -z $SPACK_ENV ]]; then
 
     cd $SPACKLOT_ROOT_DEPLOYMENT/spack
 
-    if git merge-base --is-ancestor 63962ed90680d339004305075da272ae93c04a41 HEAD; then
+    if git merge-base --is-ancestor 9377a7b31dab3cb3880326de764d0ebb4f782d4f HEAD; then
         # Spack v1.2 changes (new package installer)
         export SPACKLOT_SPACK_API_VERSION=3
-    elif git merge-base --is-ancestor 73eaea13f381e3495299284856fd02a64e1d154c HEAD; then
+    elif git merge-base --is-ancestor 02700dc6da801f9857720fa5533e61e8d86fc969 HEAD; then
         # Spack v1.0 changes (new package API)
         export SPACKLOT_SPACK_API_VERSION=2
     elif git merge-base --is-ancestor 6f948eb847c46a9caea852d3ffffd9cd4575dacc HEAD; then

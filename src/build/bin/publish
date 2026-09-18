@@ -10,7 +10,7 @@
 #           shell script. So we must activate in the script!
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   20:20, 17 Aug 2026
+#   Last Revised:   23:15, 17 Sep 2026
 #
 
 
@@ -381,7 +381,7 @@ fi
 #
 
 # First, get metadata from the build environment
-found_pkgs="$(spack find -L --no-groups -r)"
+found_pkgs="$(spack find -l --no-groups -r)"
 build_hashes="$(awk '$1 ~ /\[[\^e+]\]/ {print $2}' <<< "$found_pkgs" | xargs)"
 pad_length=$(awk '/padded_length: / {print $2}' $SPACK_ENV/spack.yaml)
 
@@ -532,7 +532,7 @@ while read spec; do
         tsecho "Checking location of package with hash $PCOL$spec_hash$DCOL" 2
 
         if [[ -z $local_hashes ]]; then
-            found_pkgs="$(spack find -L --no-groups -r)"
+            found_pkgs="$(spack find -l --no-groups -r)"
             local_hashes="$(awk '$1 ~ /\[\+\]/ {print $2}' <<< "$found_pkgs" | xargs)"
 
             # Prefix locks can become broken...
