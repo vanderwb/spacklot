@@ -155,7 +155,7 @@ done
 
 # Find cache item in registry
 for label in ${field_list[@]}; do
-    ((n++))
+    n=$((n + 1))
 
     if [[ $label == "config[cache]" ]]; then
         break
