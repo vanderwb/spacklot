@@ -1,6 +1,5 @@
 *.pyc
 clusters/*
 !clusters/default
-!clusters/deploy.cfg
 disable-*.cfg
 .cache
