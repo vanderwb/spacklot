@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   14:33, 18 Sep 2026
+#   Last Revised:   21:35, 30 Sep 2026
 #
 
 set -e
@@ -145,6 +145,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Source specified config
+if [[ -z $spacklot_config ]] && [[ ! -e $SPACKLOT_DIR/clusters/deploy.cfg ]]; then
+    ln -s $SPACKLOT_DIR/clusters/default/deploy.cfg $SPACKLOT_DIR/clusters/deploy.cfg
+fi
+
 . $SPACKLOT_DIR/clusters/${spacklot_config:-deploy}.cfg
 export SPACKLOT_PRODUCTION_USER
 cluster_dir=$SPACKLOT_DIR/clusters/$SPACKLOT_COLLECTION/$SPACKLOT_DEPLOYMENT_NAME
@@ -474,29 +478,25 @@ if [[ ! $skip_steps =~ " "(mirrors|all)" "  ]]; then
         mirror_variable=SPACKLOT_MIRROR_${mtype}
         mirror=${!mirror_variable}
         mirror_type=posix
+        mirror_flags=
 
         if [[ -n $mirror ]]; then
             tsecho "Adding disk mirror ${GCOL}${mirror}$DCOL"
 
             if [[ $mirror == /* ]] && [[ ! -d $mirror ]]; then
-                if [[ $(sed 's/production/GLOBAL/;s/testing/LOCAL/' <<< $SPACKLOT_DEPLOYMENT_TYPE) == $mtype ]]; then
-                    spack mirror create -d $mirror --private
-                    mirror_flags="--type source"
-                fi
+                mirror_flags="--type source"
             fi
 
-            if [[ $mirror != /* ]] || [[ -d $mirror ]]; then
-                spack mirror add $mirror_flags hpc_mirror_${mtype,,} $mirror
+            spack mirror add $mirror_flags hpc_mirror_${mtype,,} $mirror
 
-                # Make sure signing keys are pushed (and index regenerated!)
-                if [[ $mirror != https* ]]; then
-                    repo_owner=$(stat -c '%U' $mirror)
+            # Make sure signing keys are pushed (and index regenerated!)
+            if [[ $mirror != https* ]] && [[ -d $mirror ]]; then
+                repo_owner=$(stat -c '%U' $mirror)
 
-                    if [[ $my_user == $repo_owner ]]; then
-                        for key in $signing_keys; do
-                            spack gpg publish --rebuild-index -m hpc_mirror_${mtype,,} $key
-                        done
-                    fi
+                if [[ $my_user == $repo_owner ]]; then
+                    for key in $signing_keys; do
+                        spack gpg publish --rebuild-index -m hpc_mirror_${mtype,,} $key
+                    done
                 fi
             fi
         fi
@@ -522,6 +522,10 @@ spack config add "config:template_dirs:$SPACK_ENV/templates/modules"
 for upstream_name in ${!SPACKLOT_UPSTREAMS[@]}; do
     spack config add "upstreams:${upstream_name}:install_tree:${SPACKLOT_UPSTREAMS[$upstream_name]}"
 done
+
+# If this is not done, we can get a bad first concretization result
+tsecho "Perform test concretization to trigger bootstrapping"
+spack spec zlib > /dev/null
 
 #
 ## ---- BUILD PACKAGES IN ENVIRONMENTS ----

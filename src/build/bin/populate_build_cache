@@ -124,7 +124,7 @@ if [[ $clobber_list == all ]]; then
     tsecho " >> Force pushing all packages (cache refresh)"
 fi
 
-raw_list=$(spack find --format "{prefix} {hash} {name}|{version}|{hash}")
+raw_list=$(spack find --format "{prefix} {hash:7} {name}|{version}|{hash:7}")
 pkg_list=$(awk -v envpath=${SPACK_ENV}/opt '$1~envpath { print $2" "$3 }' <<< "$raw_list")
 
 while [[ ${cache_list+set} != set ]]; do
@@ -153,13 +153,22 @@ while [[ ${cache_list+set} != set ]]; do
     esac
 done
 
+# Find cache item in registry
+for label in ${field_list[@]}; do
+    ((n++))
+
+    if [[ $label == "config[cache]" ]]; then
+        break
+    fi
+done
+
 while read hash triplet; do
     pkg=${triplet//|/-}
     name=${triplet%%|*}
 
     if [[ $cache_list != *$pkg* ]] || [[ $clobber_list == all ]] || [[ " $clobber_list " == *" $hash "* ]]; then
         if [[ -f $SPACKLOT_ENV_BUILD/.installs ]]; then
-            use_cache=$(awk -F: -v spec_hash="$hash" '$2 == spec_hash {print $3}' $SPACKLOT_ENV_BUILD/.installs)
+            use_cache=$(sed -n '3,$ s/ *| */|/gp' $SPACKLOT_ENV_BUILD/registry | awk -F\| -v hash="$hash" "\$1 == hash {print \$$n; exit}")
         fi
 
         if [[ $use_cache != no ]]; then

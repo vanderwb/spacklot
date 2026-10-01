@@ -8,7 +8,7 @@
 #           and any other packages that need it
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   09:28, 18 Sep 2026
+#   Last Revised:   19:26, 30 Sep 2026
 #
 
 
@@ -33,6 +33,7 @@ Options
     -a, --overwrite-access  replace pkg access settings with those in manifest
     -c, --prefer-cache      specify that only cached packages should be used
     -d, --dry-run           show what would be done; do not make any changes
+    -D, --debug             activate debug mode (set -x)
     -f, --fail-fast         if any build task fails, terminate all immediately
     -i, --ignore-preferred  version-agnostic specs need not used preferred
     -j, --jobs-per-task N   number of build jobs per spack install task
@@ -238,6 +239,9 @@ while [[ $# -gt 0 ]]; do
         -d|--dry-run|--dryrun)
             header_cmd="cat"
             dry_run=true
+            ;;
+        -D|--debug)
+            debug_mode=true
             ;;
         -f|--fail-fast)
             fail_fast=true
@@ -662,9 +666,20 @@ function modify_spec_access {
     spec_name=$(sed 's/[@%^+~ ].*//' <<< "$3")
     spec_clean="${3%%%\[*}"
 
-    sed -i "/^[ ]*core_specs:/,/^ *[a-z]/ {/- $spec_name/d}" $SPACK_ENV/spack.yaml
-    sed -i "/^[ ]*lmod:$/,$ {/^[ ]*exclude:$/,/^[ ]*[a-z]/ {/- $spec_clean/d}}" $SPACK_ENV/spack.yaml
-    sed -i "/^  view:$/,/^  [a-z]*:/ {/^[ ]*select:$/,/^[ ]*[a-z]/ {/- $spec_clean/d}}" $SPACK_ENV/spack.yaml
+    if [[ $SPACKLOT_SPACK_API_VERSION -ge 3 ]]; then
+        set +e
+        {
+            spack config rm "modules:default:lmod:core_specs:$spec_name"
+            spack config rm "modules:default:lmod:exclude:$spec_clean"
+            spack config rm "view:baseenv:select:$spec_clean"
+            spack config rm "modules:default:lmod:exclude:$spec_clean"
+        } 2> /dev/null
+        set -e
+    else
+        sed -i "/^[ ]*core_specs:/,/^ *[a-z]/ {/- $spec_name/d}" $SPACK_ENV/spack.yaml
+        sed -i "/^[ ]*lmod:$/,$ {/^[ ]*exclude:$/,/^[ ]*[a-z]/ {/- $spec_clean/d}}" $SPACK_ENV/spack.yaml
+        sed -i "/^  view:$/,/^  [a-z]*:/ {/^[ ]*select:$/,/^[ ]*[a-z]/ {/- $spec_clean/d}}" $SPACK_ENV/spack.yaml
+    fi
 
     case $1 in
         core)
@@ -1036,7 +1051,7 @@ function install_specs {
 
     if [[ -n $install_queue ]]; then
         while read queued_hash; do
-            if [[ $queued_hash != $spec_hash ]]; then
+            if [[ ${#queue_config[@]} -eq 1 ]] || [[ $queued_hash != $spec_hash ]]; then
                 queued_spec=$(awk -F'|' '{print $NF}' <<< ${queue_config[$queued_hash]})
                 build_steps="spack add ${queued_spec}${SEP}$build_steps"
             fi
@@ -1260,6 +1275,16 @@ log_specs=$log_dir/specs.$start_time.${SUDO_USER:-$USER}
 log_installs=$log_dir/installs.$start_time.${SUDO_USER:-$USER}
 log_errors=$log_dir/error.$start_time.${SUDO_USER:-$USER}
 
+if [[ $debug_mode == true ]]; then
+    mkdir -p $SPACK_ENV/debug
+    debug_file=$SPACK_ENV/debug/installs.$start_time.${SUDO_USER:-$USER}
+    tsecho "Activating ${RCOL}DEBUG MODE${DCOL}"
+    tsecho " >> Writing debug log to ${PCOL}${debug_file}$DCOL"
+    exec 1> >(tee -a $debug_file)
+    exec 2> >(tee -a $debug_file >/dev/null)
+    set -x
+fi
+
 # Make sure environment reports current state
 tsecho "Verify current environment concretization"
 
@@ -1377,7 +1402,7 @@ EOF
 
 echo "Querying current root and installed packages ..."
 start_hashes=$(spack find -l --no-groups -r | awk '$1 ~ /\[[\^e+]\]/ {print $2}' | xargs)
-start_hashes_all=$(spack find --format '{hash}' | xargs)
+start_hashes_all=$(spack find --format '{hash:7}' | xargs)
 initialize_registry
 
 echo -e "Processing install manifest ...\n"

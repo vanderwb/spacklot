@@ -25,9 +25,6 @@ fi
 export my_dir="$( cd "$(dirname "$0")" ; pwd )"
 . $my_dir/tools/init.sh
 
-# Make sure environment is exported for Python
-export SPACKLOT_CLUSTER SPACKLOT_CLUSTER_VERSION SPACKLOT_TMPROOT
-
 # Run the main code using Spack's Python
 spack python $my_dir/tools/templatize_yaml.py
 
@@ -37,7 +34,9 @@ else
     tsecho "Error: YAML template could not be created"
 fi
 
-# Filter out any remaining references to the deployed build env
+# Filter out any remaining references to the deployed build env or core compiler
 for yaml_file in $(find $SPACK_ENV/templates/yaml -name "*.yaml"); do
     sed -i "s|$SPACK_ENV|%BASEROOT%|" $yaml_file
+    sed -i "s|$SPACKLOT_CORE_GCC|gcc@%SYSTEMGCC%|" $yaml_file
+    sed -i "s|${SPACKLOT_CORE_GCC/@/-runtime@}|gcc-runtime@%SYSTEMGCC%|" $yaml_file
 done

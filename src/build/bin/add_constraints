@@ -6,7 +6,7 @@
 #   - to the YAML file.
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   14:53, 29 Jun 2026
+#   Last Revised:   14:03, 30 Sep 2026
 #
 
 function usage {
@@ -22,6 +22,7 @@ Spack will be forced to use the external.
 
 Options
     -h, --help              show this help message
+    -D, --debug             activate debug mode (set -x)
     -v, --verbose           provide additional logging messages
 
 EOF
@@ -38,6 +39,9 @@ export my_dir="$( cd "$(dirname "$0")" ; pwd )"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        -D|--debug)
+            debug_mode=true
+            ;;
         -v|--verbose)
             export log_verbosity=$((log_verbosity + 1))
             ;;
@@ -241,6 +245,16 @@ function process_entry {
 
     unset stored_entry
 }
+
+if [[ $debug_mode == true ]]; then
+    mkdir -p $SPACK_ENV/debug
+    debug_file=$SPACK_ENV/debug/constraints.$start_time.${SUDO_USER:-$USER}
+    tsecho "Activating ${RCOL}DEBUG MODE${DCOL}"
+    tsecho " >> Writing debug log to ${PCOL}${debug_file}$DCOL"
+    exec 1> >(tee -a $debug_file)
+    exec 2> >(tee -a $debug_file >/dev/null)
+    set -x
+fi
 
 # First, let's get the known external prefixes
 declare -A known_externals
