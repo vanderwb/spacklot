@@ -9,7 +9,7 @@ that Spack decides to start installing packages you know are installed after
 an unexpected lengthy concretization. There's no good way out of this. You
 need to regenerate the package index:
 
-    rm opt/.../.spack-db/index.json
+    rm apps/.../.spack-db/index.json
     spack reindex
 
 This gets you out of that problem, but Spack seems to get confused as to

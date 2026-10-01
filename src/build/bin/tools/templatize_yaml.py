@@ -76,8 +76,6 @@ for yaml_file in yaml_files:
                 elif subkey == "install_tree":
                     if "root" in orig_data[key][subkey]:
                         data[key][subkey]["root"] = "%INSTALLROOT%"
-                    if "projections" in orig_data[key][subkey]:
-                        data[key][subkey]["projections"] = dict(sorted(data[key][subkey]["projections"].items(), key=lambda item: item[0]))
                 elif "_cache" in subkey or subkey == "test_stage":
                     data[key][subkey] = data[key][subkey].replace(tmproot, "%TMPROOT%").replace(deployment, "%DEPLOYMENT%")
                 elif subkey == "build_stage":

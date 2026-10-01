@@ -1,7 +1,7 @@
 # This script should be sourced by other bin scripts
 
 if [[ $1 == build ]]; then
-    pkg_root=$SPACK_ENV/opt
+    pkg_root=$SPACK_ENV/apps
     module_root=$SPACK_ENV/modules
 else
     pkg_root=$SPACKLOT_ROOT_PUBLIC/default/spack/opt/spack

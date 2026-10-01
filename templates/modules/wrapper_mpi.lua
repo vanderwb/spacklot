@@ -1,4 +1,4 @@
-{% extends "default.lua" %}
+{% extends "modules/modulefile.lua" %}
 {% block footer %}
 
 -- If wrapper is loaded, make sure mpi wrappers are removed at unload

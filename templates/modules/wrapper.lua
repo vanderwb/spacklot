@@ -1,4 +1,4 @@
-{% extends "default.lua" %}
+{% extends "modules/modulefile.lua" %}
 {% block footer %}
 
 if os.getenv("LMOD_FAMILY_MPI") then

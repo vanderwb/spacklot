@@ -8,7 +8,7 @@
 #           and any other packages that need it
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   19:26, 30 Sep 2026
+#   Last Revised:   11:04, 01 Oct 2026
 #
 
 
@@ -1242,7 +1242,7 @@ function backup_build_database {
             fi
 
             # Find the database path
-            search_path=opt
+            search_path=apps
 
             while [[ -d $search_path ]]; do
                 if [[ -d $search_path/.spack-db ]]; then

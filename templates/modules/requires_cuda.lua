@@ -1,4 +1,4 @@
-{% extends "default.lua" %}
+{% extends "modules/modulefile.lua" %}
 {% block autoloads %}
 
 -- Require CUDA module
