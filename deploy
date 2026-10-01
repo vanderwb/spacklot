@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   21:35, 30 Sep 2026
+#   Last Revised:   22:01, 30 Sep 2026
 #
 
 set -e
@@ -481,16 +481,18 @@ if [[ ! $skip_steps =~ " "(mirrors|all)" "  ]]; then
         mirror_flags=
 
         if [[ -n $mirror ]]; then
-            tsecho "Adding disk mirror ${GCOL}${mirror}$DCOL"
-
-            if [[ $mirror == /* ]] && [[ ! -d $mirror ]]; then
-                mirror_flags="--type source"
+            if [[ ! -d $mirror ]]; then
+                if [[ $(sed 's/production/GLOBAL/;s/testing/LOCAL/' <<< $NCAR_SPACK_DEPLOY_TYPE) == $mtype ]]; then
+                    spack mirror create -d $mirror -a --private
+                    mirror_flags="--type source"
+                fi
             fi
 
-            spack mirror add $mirror_flags hpc_mirror_${mtype,,} $mirror
+            if [[ -d $mirror ]]; then
+                tsecho "Adding disk mirror ${GCOL}${mirror}$DCOL"
+                spack mirror add $mirror_flags hpc_mirror_${mtype,,} $mirror
 
-            # Make sure signing keys are pushed (and index regenerated!)
-            if [[ $mirror != https* ]] && [[ -d $mirror ]]; then
+                # Make sure signing keys are pushed (and index regenerated!)
                 repo_owner=$(stat -c '%U' $mirror)
 
                 if [[ $my_user == $repo_owner ]]; then
@@ -502,10 +504,12 @@ if [[ ! $skip_steps =~ " "(mirrors|all)" "  ]]; then
         fi
     done
 
-    # Install any known keys from the cache
-    tsecho "Adding trusted keys from buildcaches"
-    spack buildcache keys --install --trust
-    echo
+    # Install any known keys from binary caches
+    if spack mirror ls | awk -F[\]\[] '{ print $2 }' | grep -q b; then
+        tsecho "Adding trusted keys from buildcaches"
+        spack buildcache keys --install --trust
+        echo
+    fi
 fi
 
 # Add custom repos
