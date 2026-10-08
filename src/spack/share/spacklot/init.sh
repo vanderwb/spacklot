@@ -33,5 +33,11 @@ if [[ -e $SPACKLOT_PYTHON_ROOT/bin/python ]]; then
     export SPACK_PYTHON=$SPACKLOT_PYTHON_ROOT/bin/python
 fi
 
+# Common aliases
+alias ls='ls --color'
+alias ll='ls -lha'
+alias diff='diff --color=always -u'
+alias grep='grep --color=auto'
+
 # Initialize Bash Spack shell integration
 . $SPACKLOT_STARTUP
