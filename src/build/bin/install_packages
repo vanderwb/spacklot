@@ -8,7 +8,7 @@
 #           and any other packages that need it
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   11:04, 01 Oct 2026
+#   Last Revised:   14:49, 07 Oct 2026
 #
 
 
@@ -477,9 +477,9 @@ function prepare_spec {
     if [[ -n $mpi ]]; then
         if [[ $spec =~ %MPI%[^^]*% ]]; then
             mpi_only="${mpi%%%*}"
-            spec="$(sed "s|%MPI%|^$mpi_only|g" <<< "$spec")"
+            spec="$(sed "s|%MPI%|^mpi=$mpi_only|g" <<< "$spec")"
         else
-            spec="$(sed "s|%MPI%|^$mpi|g;t;s|$| ^$mpi|" <<< "$spec")"
+            spec="$(sed "s|%MPI%|^mpi=$mpi|g;t;s|$| ^mpi=$mpi|" <<< "$spec")"
         fi
     fi
 
@@ -1091,7 +1091,8 @@ function install_specs {
 
         # *** Install command happens here ***
         if [[ $SPACKLOT_SPACK_API_VERSION -ge 3 ]]; then
-            (trap '' SIGINT; $my_build_cmd |& tee -a $my_log |                                      \
+            # If stdin is connected to a terminal, we'll get no log output, so redirect is required
+            (trap '' SIGINT; $my_build_cmd < /dev/null |& tee -a $my_log |                          \
                 sed -u "s/^\(==> Error:.*\)/$RCOL\1$DCOL/; s/^/$prefix/"; exit ${PIPESTATUS[0]}) &
         else
             (trap '' SIGINT; $my_build_cmd |& tee -a $my_log |                                      \
