@@ -25,6 +25,35 @@ if "@" not in comp_spec:
 
 spec_name, spec_version = comp_spec.split("@")
 
+# Infer some settings from the environment
+env_dir = os.environ["SPACK_ENV"]
+
+if yaml_scope == "spack":
+    yaml_path = f"{env_dir}/spack.yaml"
+else:
+    yaml_path = f"{env_dir}/includes/{yaml_scope}.yaml"
+
+with open(yaml_path, 'r') as yaml_file:
+    all_data = yaml.load(yaml_file)
+
+    if yaml_scope == "spack":
+        data = all_data["spack"]
+    else:
+        data = all_data
+
+if comp_root == "auto":
+    try:
+        for external in data["packages"][spec_name]["externals"]:
+            if external["spec"].startswith(comp_spec):
+                comp_root = external["prefix"]
+                break
+    except KeyError:
+        sys.exit(f"Error: external {spec_name} not found in {yaml_scope}.yaml")
+
+    if comp_root == "auto":
+        sys.exit(f"Error: external {spec_name} not found in {yaml_scope}.yaml")
+
+# Then let's define modifications
 mods = CommentedMap()
 
 if "gcc" in script_name:
@@ -46,22 +75,7 @@ elif "nvhpc" in script_name:
 elif "cce" in script_name:
     mods["set"] = CommentedMap({"CRAYPE_LINK_TYPE" : "dynamic"})
 
-# Infer some settings from the environment
-env_dir = os.environ["SPACK_ENV"]
-
-if yaml_scope == "spack":
-    yaml_path = f"{env_dir}/spack.yaml"
-else:
-    yaml_path = f"{env_dir}/includes/{yaml_scope}.yaml"
-
-with open(yaml_path, 'r') as yaml_file:
-    all_data = yaml.load(yaml_file)
-
-    if yaml_scope == "spack":
-        data = all_data["spack"]
-    else:
-        data = all_data
-
+# Apply modifications
 try:
     for external in data["packages"][spec_name]["externals"]:
         if external["spec"].startswith(comp_spec):
