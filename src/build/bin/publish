@@ -10,7 +10,7 @@
 #           shell script. So we must activate in the script!
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   11:11, 01 Oct 2026
+#   Last Revised:   09:44, 07 Oct 2026
 #
 
 
@@ -598,7 +598,7 @@ done
 
 if [[ -n $SPACKLOT_ROOT_MODULES ]]; then
     tsecho "Generating modules in public environment"
-    spack module lmod refresh $SPACKLOT_MODULE_FLAGS -y |& grep -v "LMod hierarchy"
+    spack module lmod refresh $SPACKLOT_MODULE_FLAGS -y |& grep -v "module hierarchy"
 fi
 
 if [[ -d $SPACKLOT_ENV_BUILD/postprocess ]]; then

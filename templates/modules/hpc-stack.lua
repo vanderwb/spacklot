@@ -75,12 +75,12 @@ else
     mroot = is_set
 end
 
-append_path("HPC_VARS_MODULEROOT", "HPC_MODULEROOT_USER")
+prepend_path("HPC_VARS_MODULEROOT", "HPC_MODULEROOT_USER")
 
 -- We need this variable to ensure modulepaths are unset correctly at swap
 if (mode() == "load") then
     setenv("__HPC_MODULEROOT_USER", mroot)
-    append_path("__HPC_VARS_MODULEROOT", "HPC_MODULEROOT_USER")
+    prepend_path("__HPC_VARS_MODULEROOT", "HPC_MODULEROOT_USER")
 end
 
 -- Add custom Core paths
@@ -91,13 +91,13 @@ if mroot_vars then
         local mroot = os.getenv("__" .. var)
 
         if mroot then
-            append_path("MODULEPATH", pathJoin(mroot, "Core"))
+            prepend_path("MODULEPATH", pathJoin(mroot, "Core"))
         end
     end
 end
 
 -- Loading this module unlocks the Spack module tree
-append_path("MODULEPATH", "%MODPATH%")
+prepend_path("MODULEPATH", "%MODPATH%")
 
 -- Add Lmod settings
 pushenv("LMOD_PACKAGE_PATH", "%UTILPATH%")
