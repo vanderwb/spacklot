@@ -141,7 +141,7 @@ for yaml_file in yaml_files:
                         data[key][mset][subkey] = dict(sorted(data[key][mset][subkey].items(), key=lambda item: item[0]))
         elif key in ["mirrors", "upstreams", "toolchains"]:
             data[key] = CommentedMap()
-        elif key in ["bootstrap", "specs"]:
+        elif key in ["bootstrap", "specs", "repos"]:
             del(data[key])
 
     if yaml_file == "spack.yaml":

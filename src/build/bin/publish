@@ -10,7 +10,7 @@
 #           shell script. So we must activate in the script!
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   09:44, 07 Oct 2026
+#   Last Revised:   12:57, 08 Oct 2026
 #
 
 
@@ -459,13 +459,13 @@ if [[ -d $SPACKLOT_ENV_PUBLIC ]]; then
         fi
     fi
 
-    if [[ -n $SPACKLOT_GITHUB ]]; then
+    if [[ -n $SPACKLOT_URL_PRODUCTION ]]; then
         tsecho "Checking that local and remote Git repos match"
         remote_commit=$(git ls-remote -h origin "$SPACKLOT_CLUSTER_VERSION" | awk '{print $1}')
         local_commit=$(git rev-parse HEAD)
 
         if [[ $remote_commit != $local_commit ]]; then
-            tsecho "Error:  Remote repo $SPACKLOT_GITHUB and local repo are not in sync."
+            tsecho "Error:  Remote repo $SPACKLOT_URL_PRODUCTION and local repo are not in sync."
             >&2 echo "           Remote: $remote_commit"
             >&2 echo -e "           Local:  $local_commit\n"
             exit 1
@@ -477,8 +477,8 @@ else
     git init $SPACKLOT_ENV_PUBLIC
     cd $SPACKLOT_ENV_PUBLIC
 
-    if [[ -n $SPACKLOT_GITHUB ]]; then
-        git remote add origin $SPACKLOT_GITHUB
+    if [[ -n $SPACKLOT_URL_PRODUCTION ]]; then
+        git remote add origin $SPACKLOT_URL_PRODUCTION
     fi
 
     git checkout -b "$SPACKLOT_CLUSTER_VERSION"
@@ -488,7 +488,7 @@ else
 
     git commit -m "Initialize repo with README and .gitignore"
 
-    if [[ -n $SPACKLOT_GITHUB ]]; then
+    if [[ -n $SPACKLOT_URL_PRODUCTION ]]; then
         git push -u origin "$SPACKLOT_CLUSTER_VERSION"
     fi
 fi
@@ -668,7 +668,7 @@ fi
 git commit -m "$commit_msg"
 echo
 
-if [[ -n $SPACKLOT_GITHUB ]]; then
+if [[ -n $SPACKLOT_URL_PRODUCTION ]]; then
     tsecho "Pushing changes to GitHub"
     echo
     git push -u origin "$SPACKLOT_CLUSTER_VERSION"
