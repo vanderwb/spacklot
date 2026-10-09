@@ -102,6 +102,11 @@ fi
 
 read mirror_name mirror_status <<< $(spack mirror ls | grep $mirror | awk -F[\]\[] '{ print $1 $2 }')
 
+if [[ -z $mirror_name ]]; then
+    tsecho "Error: Mirror ($mirror) could not be found in environment."
+    exit 1
+fi
+
 # Job tracking by PIDs
 declare -A job_pids
 
@@ -141,6 +146,12 @@ fi
 
 raw_list=$(spack find --format "{prefix} {hash:7} {name}|{version}|{hash:7}")
 pkg_list=$(awk -v envpath=${SPACK_ENV}/apps '$1~envpath { print $2" "$3 }' <<< "$raw_list")
+
+# If no packages found, stop here
+if [[ -z ${pkg_list// } ]]; then
+    tsecho "No cacheable packages found in environment"
+    exit
+fi
 
 while [[ ${cache_list+set} != set ]]; do
     case $mirror in
