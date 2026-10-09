@@ -8,7 +8,7 @@
 #           and any other packages that need it
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   14:49, 07 Oct 2026
+#   Last Revised:   15:53, 09 Oct 2026
 #
 
 
@@ -41,7 +41,7 @@ Options
     -k, --keep-source OPT   instructs Spack to keep source for all installs
                             (options decide location: stage, install)
     -l, --host-list HOSTS   specify build hosts
-                            (comma-separated list, "cluster", or "pbs")
+                            (comma-separated list, "cluster", "pbs", "slurm")
     -n, --num-tasks N       # of concurrent calls to spack install (default 1)
                             if > # of build hosts, will cap at that value
     -p, --package-limit N   max number of packages to be installed at once
@@ -1339,6 +1339,13 @@ elif [[ $build_hosts == pbs ]]; then
         build_hosts=($(uniq $PBS_NODEFILE))
     else
         tsecho "Error: pbs hosts requested but PBS_NODEFILE is not set (Are we in a PBS job?)"
+        exit 1
+    fi
+elif [[ $build_hosts == slurm ]]; then
+    if [[ -n $SLURM_NODELIST ]]; then
+        build_hosts=($(scontrol show hostnames $SLURM_NODELIST))
+    else
+        tsecho "Error: slurm hosts requested but SLURM_NODELIST is not set (Are we in a Slurm job?)"
         exit 1
     fi
 else

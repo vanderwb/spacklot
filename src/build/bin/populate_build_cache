@@ -134,11 +134,6 @@ function wait_for_jobs {
 tsecho "Using up to $max_jobs threads to populate cache"
 tsecho "Pushing to cache: ${GCOL}${mirror}${DCOL}"
 
-if [[ $mirror_status != *b* ]]; then
-    tsecho "Setting mirror mode to [${PCOL}sb${DCOL}]"
-    spack mirror set --type binary --type source $mirror_name
-fi
-
 if [[ $clobber_list == all ]]; then
     cache_cmd+=" --force"
     tsecho " >> Force pushing all packages (cache refresh)"
@@ -151,6 +146,11 @@ pkg_list=$(awk -v envpath=${SPACK_ENV}/apps '$1~envpath { print $2" "$3 }' <<< "
 if [[ -z ${pkg_list// } ]]; then
     tsecho "No cacheable packages found in environment"
     exit
+fi
+
+if [[ $mirror_status != *b* ]]; then
+    tsecho "Setting mirror mode to [${PCOL}sb${DCOL}]"
+    spack mirror set --type binary --type source $mirror_name
 fi
 
 while [[ ${cache_list+set} != set ]]; do
