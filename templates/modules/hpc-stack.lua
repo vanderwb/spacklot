@@ -62,9 +62,10 @@ end
 local is_set    = os.getenv("HPC_MODULEROOT_USER")
 local was_set   = os.getenv("__HPC_ENV_MODULEROOT_USER")
 local old_value = os.getenv("__HPC_MODULEROOT_USER")
+local my_home   = os.getenv("HOME")
 
 if was_set or not is_set then
-    mroot = pathJoin("/home", user, "spack-downstreams/%CLUSTER%/modules/%VERSION%")
+    mroot = pathJoin(my_home, "spack-downstreams/%CLUSTER%/modules/%VERSION%")
     setenv("__HPC_ENV_MODULEROOT_USER", 1)
     
     -- Only unset if user has not changed value in the interim

@@ -49,7 +49,7 @@ SSH key sudo mechanism. Put this logic in your role account's `~/.bashrc` file:
 # Configure Git to work as sudo-user
 if [[ -n $SUDO_USER ]]; then
     my_name=$(getent passwd $SUDO_USER | awk -F[:,] '{print $5}')
-    export GIT_SSH=/home/<PRODUCTION_USER>/.ssh/gitwrap.ssh
+    export GIT_SSH=<PRODUCTION_USER_HOME>/.ssh/gitwrap.ssh
     export {GIT_AUTHOR_NAME,GIT_COMMITTER_NAME}=$my_name
     export {GIT_AUTHOR_EMAIL,GIT_COMMITTER_EMAIL}=<email>
 fi

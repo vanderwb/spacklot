@@ -51,7 +51,7 @@ done
 
 # Ensure no ~/.spack contamination
 if [[ -d ~/.spack ]]; then
-    backup_root=/home/$current_user/.spack-backups
+    backup_root=~/.spack-backups
     mkdir -p $backup_root
     mv ~/.spack $backup_root/$(date +%y%m%d-%H%M%S)
 fi
