@@ -5,7 +5,7 @@
 #   incorporating those changes to this repo.
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   20:56, 14 Sep 2026
+#   Last Revised:   12:02, 26 Oct 2026
 #
 
 my_root="$( cd "$(dirname "$0")"/.. ; pwd )"
@@ -29,7 +29,7 @@ exit ${1:-0}
 #
 
 # Pretty colors
-export PCOL="\033[1;35m" RCOL="\033[1;31m" DCOL="\033[0m"
+export GCOL="\033[1;32m" PCOL="\033[1;35m" RCOL="\033[1;31m" DCOL="\033[0m"
 
 # Handle arguments
 user_args=( "$@" )
@@ -120,9 +120,17 @@ for src_path in ${!path_map[@]}; do
                     echo -e " - $src_file"
                 fi
             else
-                echo -e "${RCOL} - $src_file (changed)$DCOL\n"
-                echo -e "   Source file:   $my_root/$src_file (modified $PCOL$(date -r $my_root/$src_file)$DCOL)"
-                echo -e "   Deployed file: $env_path/$dep_file (modified $PCOL$(date -r $env_path/$dep_file)$DCOL)"
+                if [[ $env_path/$dep_file -nt $my_root/$src_file ]]; then
+                    echo -e "${RCOL} - $src_file (changed - deployed file is newer)$DCOL\n"
+                    echo -e "   Source file:   $my_root/$src_file (modified $PCOL$(date -r $my_root/$src_file)$DCOL)"
+                    echo -e "   Deployed file: $env_path/$dep_file (modified $PCOL$(date -r $env_path/$dep_file)$DCOL)"
+                    update_cmd="cp $env_path/$dep_file $my_root/$src_file"
+                else
+                    echo -e "${RCOL} - $src_file (changed - source file is newer)$DCOL\n"
+                    echo -e "   Deployed file: $env_path/$dep_file (modified $PCOL$(date -r $env_path/$dep_file)$DCOL)"
+                    echo -e "   Source file:   $my_root/$src_file (modified $PCOL$(date -r $my_root/$src_file)$DCOL)"
+                    update_cmd="cp $my_root/$src_file $env_path/$dep_file"
+                fi
 
                 if [[ $diff_mode == true ]]; then
                     read -n 1 -s -r -p "   Press any key to display differences..."
@@ -130,6 +138,8 @@ for src_path in ${!path_map[@]}; do
                     echo
                 fi
 
+                echo
+                echo -e " >> ${GCOL}${update_cmd}$DCOL"
                 echo
             fi
         fi
