@@ -2,6 +2,10 @@
 #
 #   This script allows you to easily switch to this software stack's
 #   build (default) or public modules
+#
+#   Author:         Brian Vanderwende
+#   Last Revised:   08:52, 10 Nov 2026
+#
 
 if ! (return 0 2>/dev/null); then
     >&2 echo "Error: I need to be sourced, not executed"
@@ -26,9 +30,31 @@ fi
 my_dir="$( cd "$(dirname "$my_path")" ; pwd )"
 . $my_dir/../main.cfg
 
-# If SPACKLOT_DEFAULT_MODULES is set, we assume this is a stand-alone stack
-# Otherwise, we assume this is an add-on set of modules we can simply add to the module path
-if [[ -n $SPACKLOT_DEFAULT_MODULES ]] && [[ ${SPACKLOT_USE_SYSTEM_LMOD:-false} == false ]]; then
+if [[ ${1:-build} == p* ]]; then
+    echo "Loading public module tree:"
+    mod_init=$SPACKLOT_ENV_PUBLIC/util/localinit.sh
+else
+    echo "Loading build module tree:"
+    mod_init=$SPACKLOT_ENV_BUILD/util/localinit.sh
+fi
+
+if [[ ! -f $mod_init ]]; then
+    2>&1 echo -e "Error: localinit.sh does not exist. No changes will be made.\n"
+    return 1
+fi
+
+# If we have already had a modules change, let's revert that
+if typeset -f reset_modules > /dev/null; then
+    echo "  (existing non-default modules detected; resetting to default first...)"
+    reset_modules
+fi
+
+# Store initial environment in case we need it
+my_env_pre=$(env)
+
+# If SPACKLOT_MODULE_ENVIRONMENT_TYPE is set to isolated, we assume we can
+# cleanly instantiate the module environment here
+if [[ ${SPACKLOT_MODULE_ENVIRONMENT_TYPE:-isolated} == isolated ]]; then
     # Check that system matches what we are loading if possible
     if [[ -n $HPC_SYSTEM ]]; then
         if [[ $HPC_SYSTEM != $SPACKLOT_CLUSTER ]]; then
@@ -39,81 +65,70 @@ if [[ -n $SPACKLOT_DEFAULT_MODULES ]] && [[ ${SPACKLOT_USE_SYSTEM_LMOD:-false} =
     else
         >&2 echo "Warning: System is not known (HPC_SYSTEM not set). Cannot verify stack compatibility."
     fi
-
+    
     # Store old module tree for reversal
-    SPACKLOT_RESET_SCRIPT=$(sed 's|\(.*envs/\).*|\1build/bin/use_modules|' <<< $LMOD_CONFIG_DIR)
-    SPACKLOT_RESET_TYPE=$(sed 's|.*/\([^/]*\)/util|\1|' <<< $LMOD_CONFIG_DIR)
-
-    if [[ ${1:-build} == p* ]]; then
-        echo "Switching to public module tree:"
-        mod_init=$SPACKLOT_ENV_PUBLIC/util/localinit.sh
-    else
-        echo "Switching to build module tree:"
-        mod_init=$SPACKLOT_ENV_BUILD/util/localinit.sh
+    if [[ -n $LMOD_CONFIG_DIR ]]; then
+        spacklot_reset_script=$(sed 's|\(.*envs/\).*|\1build/bin/use_modules|' <<< $LMOD_CONFIG_DIR)
+        spacklot_reset_type=$(sed 's|.*/\([^/]*\)/util|\1|' <<< $LMOD_CONFIG_DIR)
     fi
 
-    if [[ -f $mod_init ]]; then
-        # First we clean
-        if typeset -f module > /dev/null; then
-            module --force purge
+    # First, let's sanitize the module environment
+    if typeset -f module > /dev/null; then
+        module --force purge
+
+        if typeset -f clearMT > /dev/null; then
+            clearMT
+        else
             unset MODULEPATH MODULEPATH_ROOT
 
-	    if [[ $my_shell == *bash ]]; then
+            if [[ $my_shell == *bash ]]; then
                 unset ${!__LMOD*} ${!LMOD*} ${!_ModuleTable*}
-	    elif [[ $my_shell == *zsh ]]; then
+            elif [[ $my_shell == *zsh ]]; then
                 unset ${(M)${(k)parameters}:#__LMOD*} ${(M)${(k)parameters}:#LMOD*} ${(M)${(k)parameters}:#_ModuleTable*}
-	    fi
-        fi
-
-        # Now we use new modules
-        . $mod_init
-        echo -e " -> $MODULEPATH_ROOT\n"
-    else
-        2>&1 echo -e "Error: localinit.sh does not exist. No changes will be made.\n"
-        return 1
-    fi
-
-    # Define shell function to return to default
-    if ! typeset -f reset_modules > /dev/null; then
-        if [[ -f $SPACKLOT_RESET_SCRIPT ]]; then
-            function reset_modules {
-                . $SPACKLOT_RESET_SCRIPT $SPACKLOT_RESET_TYPE
-                unset SPACKLOT_RESET_SCRIPT SPACKLOT_RESET_TYPE reset_modules
-            }
-
-            echo -e "Type \"reset_modules\" to return to system module stack\n"
-        else
-            unset SPACKLOT_RESET_SCRIPT SPACKLOT_RESET_TYPE
+            fi
         fi
     fi
-else
-    # Lmod must exist within the current environment
-    if [[ -z $LMOD_ROOT ]]; then
-        2>&1 echo "Error: Module stack ($SPACKLOT_CLUSTER) requires existing Lmod. None found in environment."
-        2>&1 echo -e "       No changes will be made.\n"
-        return 1
-    fi
-
-    if [[ ${1:-build} == p* ]]; then
-        echo "Adding modules from public module tree:"
-        SPACKLOT_RESET_MODULES=$SPACKLOT_ENV_PUBLIC/modules/environment
-    else
-        echo "Adding modules from build module tree:"
-        SPACKLOT_RESET_MODULES=$SPACKLOT_ENV_BUILD/modules/environment
-    fi
-    
-    module use -a $SPACKLOT_RESET_MODULES
-    echo -e " -> $SPACKLOT_RESET_MODULES\n"
-
-    # Define shell function to return to default
-    if ! typeset -f reset_modules > /dev/null; then
-        function reset_modules {
-            module unuse $SPACKLOT_RESET_MODULES
-            unset SPACKLOT_RESET_MODULES reset_modules
-        }
-
-        echo -e "Type \"reset_modules\" to remove added modules\n"
-    fi
+elif typeset -f clearMT > /dev/null; then
+    module --force purge
+    clearMT
 fi
 
-unset my_shell my_path my_dir mod_init
+# Init the new modules into your environment
+. $mod_init
+my_env_post=$(env)
+
+echo -e " -> $MODULEPATH_ROOT\n"
+echo -e "Type \"reset_modules\" to return to system module stack\n"
+
+# Define shell function to return to default
+if [[ -f $spacklot_reset_script ]]; then
+    function reset_modules {
+        echo "Resetting modules to system default ..."
+        . $spacklot_reset_script $spacklot_reset_type
+        unset spacklot_reset_script spacklot_reset_type
+        unset -f reset_modules
+    }
+else
+    spacklot_reset_script=~/.spacklot_reset.$$
+    my_env_diff=$(command diff <(printf "%s\n" "$my_env_pre") <(printf "%s\n" "$my_env_post"))
+    
+    while read var; do
+        printf "%s\n" "unset $var" >> $spacklot_reset_script
+    done <<< $(sed -n 's/> \([^=]*\).*/\1/p' <<< $my_env_diff)
+
+    while read expression; do
+        printf "%s\n" "export $expression" >> $spacklot_reset_script
+    done <<< $(sed -n 's/< \([^=]*=\)\(.*\)/\1"\2"/p' <<< $my_env_diff)
+
+    function reset_modules {
+        echo "Resetting modules to system default ..."
+        . $spacklot_reset_script
+        rm $spacklot_reset_script
+        unset spacklot_reset_script
+        unset -f reset_modules
+    }
+
+    unset my_env_diff
+fi
+
+unset my_shell my_path my_dir mod_init my_env_pre my_env_post

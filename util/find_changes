@@ -5,7 +5,7 @@
 #   incorporating those changes to this repo.
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   12:02, 26 Oct 2026
+#   Last Revised:   15:44, 10 Nov 2026
 #
 
 my_root="$( cd "$(dirname "$0")"/.. ; pwd )"
@@ -29,7 +29,8 @@ exit ${1:-0}
 #
 
 # Pretty colors
-export GCOL="\033[1;32m" PCOL="\033[1;35m" RCOL="\033[1;31m" DCOL="\033[0m"
+export GCOL="\033[1;32m" PCOL="\033[1;35m" RCOL="\033[1;31m"
+export FCOL="\033[0;37m" DCOL="\033[0m"
 
 # Handle arguments
 user_args=( "$@" )
@@ -102,17 +103,24 @@ path_map[$cluster_root/postprocess]=postprocess
 path_map[$cluster_root/spack.yaml]=templates/yaml/spack.yaml
 path_map[$cluster_root/includes]=templates/yaml/includes
 
+ignore_list="ascending.lua descending.lua default.lua .swp"
+
 cd $my_root
 
 for src_path in ${!path_map[@]}; do
     if [[ -d $src_path ]]; then
-        src_files="$(find -L $src_path -maxdepth 1 -type f,l)"
+        src_files="$(find -L $src_path -maxdepth 1 -type f,l 2> /dev/null)"
+
+        if [[ ${path_map[$src_path]} != . ]]; then
+            dep_files="$(cd $env_path; find -L ${path_map[$src_path]} -maxdepth 1 -type f,l 2> /dev/null)"
+        fi
     else
         src_files=$src_path
     fi
 
     for src_file in $src_files; do
         dep_file=$(sed "s|$src_path|${path_map[$src_path]}|" <<< $src_file)
+        dep_tracked="$dep_tracked $dep_file"
 
         if [[ -f $env_path/$dep_file ]] && [[ $dep_file != ./spack.yaml ]]; then
             if cmp -s $my_root/$src_file $env_path/$dep_file; then
@@ -120,6 +128,14 @@ for src_path in ${!path_map[@]}; do
                     echo -e " - $src_file"
                 fi
             else
+                # If we are dealing with main, let's make sure differences are real...
+                if [[ $dep_file == *main.cfg ]]; then
+                    if cmp -s <(sed '1,/VERSION TRACKING BELOW/d' $my_root/$src_file)       \
+                            <(sed '1,/VERSION TRACKING BELOW/d' $env_path/$dep_file); then
+                        continue
+                    fi
+                fi
+
                 if [[ $env_path/$dep_file -nt $my_root/$src_file ]]; then
                     echo -e "${RCOL} - $src_file (changed - deployed file is newer)$DCOL\n"
                     echo -e "   Source file:   $my_root/$src_file (modified $PCOL$(date -r $my_root/$src_file)$DCOL)"
@@ -134,14 +150,56 @@ for src_path in ${!path_map[@]}; do
 
                 if [[ $diff_mode == true ]]; then
                     read -n 1 -s -r -p "   Press any key to display differences..."
-                    diff --minimal --color=always -u $my_root/$src_file $env_path/$dep_file | less -r
+
+                    if [[ $dep_file == */main.cfg ]]; then
+                        diff --minimal --color=always -u <(sed '1,/VERSION TRACKING BELOW/d' $my_root/$src_file)    \
+                            <(sed '1,/VERSION TRACKING BELOW/d' $env_path/$dep_file) | less -r
+                    else
+                        diff --minimal --color=always -u $my_root/$src_file $env_path/$dep_file | less -r
+                    fi
+
                     echo
                 fi
 
                 echo
-                echo -e " >> ${GCOL}${update_cmd}$DCOL"
+
+                if [[ $dep_file == */main.cfg ]]; then
+                    echo -e " >> ${FCOL}main.cfg should be changed manually and not directly copied.$DCOL"
+                else
+                    echo -e " >> ${GCOL}${update_cmd}$DCOL"
+                fi
                 echo
             fi
         fi
     done
+
+    if [[ -n $dep_files ]]; then
+        for dep_file in $dep_files; do
+            if [[ " $dep_tracked " != *" $dep_file "* ]]; then
+                for entry in $ignore_list; do
+                    if [[ $(basename $dep_file) == *$entry ]]; then
+                        skip_dep=true
+                        break
+                    fi
+                done
+
+                if [[ $skip_dep != true ]]; then
+                    if [[ $new_file_msg != false ]]; then
+                        echo -e "\n${FCOL} + New files detected in deployed '${path_map[$src_path]}':$DCOL"
+                        new_file_msg=false
+                    fi
+
+                    echo -e "$FCOL + ${GCOL}$env_path/${dep_file}$DCOL"
+                fi
+            fi
+
+            unset skip_dep
+        done
+        
+        if [[ $new_file_msg == false ]]; then
+            echo
+        fi
+    fi
+    
+    unset dep_files dep_tracked new_file_msg
 done

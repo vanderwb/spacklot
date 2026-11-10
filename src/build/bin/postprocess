@@ -4,7 +4,7 @@
 #   subdirectory of the build environment.
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   09:44, 07 Oct 2026
+#   Last Revised:   10:53, 10 Nov 2026
 #
 
 function usage {
@@ -97,8 +97,23 @@ if [[ ${skip_execution:-false} != true ]]; then
     done
 
     if [[ -n $SPACKLOT_ROOT_MODULES ]]; then
+        # Prepare module templates
+        cp $SPACK_ROOT/share/spack/templates/modules/modulefile.lua     \
+            $SPACK_ENV/templates/modules/ascending.lua
+        sed '/MODULEPATH/ s/prepend_path/append_path/g'                 \
+            $SPACK_ROOT/share/spack/templates/modules/modulefile.lua    \
+            > $SPACK_ENV/templates/modules/descending.lua 
+        
+        current_order=$(basename $(readlink -f $SPACK_ENV/templates/modules/default.lua))
+
         # First, let's make sure module tree exists
-        if [[ ! -d $MOD_DEPLOYMENT ]]; then
+        if [[ ${SPACKLOT_MODULE_ORDER:-ascending}.lua != $current_order ]]; then
+            tsecho "Module order changed to ${GCOL}${SPACKLOT_MODULE_ORDER:-ascending}${DCOL}. Must regenerate modules"
+            rm -f $SPACK_ENV/templates/modules/default.lua
+            ln -s $SPACK_ENV/templates/modules/${SPACKLOT_MODULE_ORDER:-ascending}.lua  \
+                $SPACK_ENV/templates/modules/default.lua
+            spack module lmod refresh $SPACKLOT_MODULE_FLAGS -y |& grep -v "module hierarchy"
+        elif [[ ! -d $MOD_DEPLOYMENT ]]; then
             spack module lmod refresh $SPACKLOT_MODULE_FLAGS -y |& grep -v "module hierarchy"
         fi
     fi
