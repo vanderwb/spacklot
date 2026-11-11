@@ -4,7 +4,7 @@
 #   subdirectory of the build environment.
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   10:53, 10 Nov 2026
+#   Last Revised:   19:54, 10 Nov 2026
 #
 
 function usage {
@@ -32,6 +32,7 @@ SPACKLOT_ENV_TYPE when calling this script. For example:
 Options
     -h, --help              show this help message
     -l, --list              list all currently defined units for the environment
+    -m, --modules           force a regeneration of modules (no delete tree)
     -u, --units [LIST]      only run the units in this comma-delimited list
     -v, --verbose           provide additional logging messages
 
@@ -70,6 +71,9 @@ while [[ $# -gt 0 ]]; do
         -l|--list)
             skip_execution=true
             ;;
+        -m|--modules)
+            regen_modules=true
+            ;;
         -u|--units)
             if [[ $1 == *=* ]]; then
                 unit_list=($(tr ',' ' ' <<< ${1#*=}))
@@ -98,22 +102,27 @@ if [[ ${skip_execution:-false} != true ]]; then
 
     if [[ -n $SPACKLOT_ROOT_MODULES ]]; then
         # Prepare module templates
-        cp $SPACK_ROOT/share/spack/templates/modules/modulefile.lua     \
-            $SPACK_ENV/templates/modules/ascending.lua
-        sed '/MODULEPATH/ s/prepend_path/append_path/g'                 \
-            $SPACK_ROOT/share/spack/templates/modules/modulefile.lua    \
-            > $SPACK_ENV/templates/modules/descending.lua 
-        
-        current_order=$(basename $(readlink -f $SPACK_ENV/templates/modules/default.lua))
+        if [[ $SPACKLOT_ENV_TYPE == build ]]; then
+            cp $SPACK_ROOT/share/spack/templates/modules/modulefile.lua     \
+                $SPACKLOT_ENV_BUILD/templates/modules/ascending.lua
+            sed '/MODULEPATH/ s/prepend_path/append_path/g'                 \
+                $SPACK_ROOT/share/spack/templates/modules/modulefile.lua    \
+                > $SPACKLOT_ENV_BUILD/templates/modules/descending.lua 
+            
+            current_order=$(basename $(readlink -f $SPACKLOT_ENV_BUILD/templates/modules/default.lua))
 
-        # First, let's make sure module tree exists
-        if [[ ${SPACKLOT_MODULE_ORDER:-ascending}.lua != $current_order ]]; then
-            tsecho "Module order changed to ${GCOL}${SPACKLOT_MODULE_ORDER:-ascending}${DCOL}. Must regenerate modules"
-            rm -f $SPACK_ENV/templates/modules/default.lua
-            ln -s $SPACK_ENV/templates/modules/${SPACKLOT_MODULE_ORDER:-ascending}.lua  \
-                $SPACK_ENV/templates/modules/default.lua
-            spack module lmod refresh $SPACKLOT_MODULE_FLAGS -y |& grep -v "module hierarchy"
-        elif [[ ! -d $MOD_DEPLOYMENT ]]; then
+            # First, let's make sure module tree exists
+            if [[ ${SPACKLOT_MODULE_ORDER:-ascending}.lua != $current_order ]]; then
+                tsecho "Module order changed to ${GCOL}${SPACKLOT_MODULE_ORDER:-ascending}${DCOL}"
+                rm -f $SPACKLOT_ENV_BUILD/templates/modules/default.lua
+                ln -s $SPACKLOT_ENV_BUILD/templates/modules/${SPACKLOT_MODULE_ORDER:-ascending}.lua  \
+                    $SPACKLOT_ENV_BUILD/templates/modules/default.lua
+                regen_modules=true
+            fi
+        fi
+        
+        if [[ ! -d $MOD_DEPLOYMENT ]] || [[ $regen_modules == true ]]; then
+            tsecho "Refreshing modules in $SPACKLOT_ENV_TYPE environment"
             spack module lmod refresh $SPACKLOT_MODULE_FLAGS -y |& grep -v "module hierarchy"
         fi
     fi

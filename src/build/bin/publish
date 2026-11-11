@@ -10,7 +10,7 @@
 #           shell script. So we must activate in the script!
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   12:57, 08 Oct 2026
+#   Last Revised:   19:51, 10 Nov 2026
 #
 
 
@@ -596,17 +596,12 @@ for cfg_file in config packages compilers modules mirrors repos concretizer upst
     fi
 done
 
-if [[ -n $SPACKLOT_ROOT_MODULES ]]; then
-    tsecho "Generating modules in public environment"
-    spack module lmod refresh $SPACKLOT_MODULE_FLAGS -y |& grep -v "module hierarchy"
-fi
-
 if [[ -d $SPACKLOT_ENV_BUILD/postprocess ]]; then
     rsync -a --delete $SPACKLOT_ENV_BUILD/postprocess/ postprocess
 fi
 
 tsecho "Running postprocessing script on environment"
-SPACKLOT_ENV_TYPE=public $SPACKLOT_ENV_BUILD/bin/postprocess
+SPACKLOT_ENV_TYPE=public $SPACKLOT_ENV_BUILD/bin/postprocess --modules
 
 tsecho "Make sure user tools can peer into source directories"
 stage_dir=$(spack location -S)
