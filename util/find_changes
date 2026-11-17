@@ -5,7 +5,7 @@
 #   incorporating those changes to this repo.
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   15:44, 10 Nov 2026
+#   Last Revised:   10:31, 17 Nov 2026
 #
 
 my_root="$( cd "$(dirname "$0")"/.. ; pwd )"
@@ -19,6 +19,9 @@ Options
     -b, --brief                 only show files that have changed
     -c, --cluster               use different cluster name than auto-detected
     -d, --diff                  provide detail on the differences in each file
+    -t, --time-type             how do we detect which file is newer?
+                                    "header" - last revised timestamp (default)
+                                    "file" - POSIX file modified time
 
 EOF
 exit ${1:-0}
@@ -35,6 +38,7 @@ export FCOL="\033[0;37m" DCOL="\033[0m"
 # Handle arguments
 user_args=( "$@" )
 output_mode=default
+time_type=header
 
 while [[ $# -gt 0 ]]; do
     key="$1"
@@ -52,6 +56,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -d|--diff)
             diff_mode=true
+            ;;
+        -t|--time-type)
+            time_type=$2
+            shift
             ;;
         *)
             env_path=$1
@@ -86,6 +94,7 @@ Deployment Type:    $SPACKLOT_DEPLOYMENT_TYPE
 
 Output mode:        $output_mode
 Display diffs:      ${diff_mode:=false}
+Time detection:     ${time_type:=header}
 
 ============================================================
 
@@ -136,26 +145,61 @@ for src_path in ${!path_map[@]}; do
                     fi
                 fi
 
-                if [[ $env_path/$dep_file -nt $my_root/$src_file ]]; then
+                newer_file=src backup_check=false
+
+                if [[ $time_type == header ]]; then
+                    dep_date=$(sed -n 's/^# *Last Revised: *//p' $env_path/$dep_file | tr -d ',')
+                    src_date=$(sed -n 's/^# *Last Revised: *//p' $my_root/$src_file | tr -d ',')
+
+                    if [[ -n $dep_date ]] && [[ -n $src_date ]]; then
+                        dep_date=$(date -d "$dep_date" +%s)
+                        src_date=$(date -d "$src_date" +%s)
+
+                        if [[ $dep_date -gt $src_date ]]; then
+                            newer_file=dep
+                        fi
+
+                        dep_date=$(date -d @$dep_date)
+                        src_date=$(date -d @$src_date)
+                    else
+                        backup_check=true
+                        echo -e "   ${FCOL}Using backup time detection method (file timestamp) ...$DCOL"
+                    fi
+                fi
+                
+                if [[ $time_type == file ]] || [[ $backup_check == true ]]; then
+                    if [[ $env_path/$dep_file -nt $my_root/$src_file ]]; then
+                        newer_file=dep
+                    fi
+
+                    dep_date=$(date -r $env_path/$dep_file)
+                    src_date=$(date -r $my_root/$src_file)
+                fi
+                        
+                if [[ $newer_file == dep ]]; then
                     echo -e "${RCOL} - $src_file (changed - deployed file is newer)$DCOL\n"
-                    echo -e "   Source file:   $my_root/$src_file (modified $PCOL$(date -r $my_root/$src_file)$DCOL)"
-                    echo -e "   Deployed file: $env_path/$dep_file (modified $PCOL$(date -r $env_path/$dep_file)$DCOL)"
-                    update_cmd="cp $env_path/$dep_file $my_root/$src_file"
+                    echo -e "   Source file:   $my_root/$src_file (modified $PCOL$src_date$DCOL)"
+                    echo -e "   Deployed file: $env_path/$dep_file (modified $PCOL$dep_date$DCOL)"
+                    old_file=$my_root/$src_file
+                    new_file=$env_path/$dep_file
                 else
                     echo -e "${RCOL} - $src_file (changed - source file is newer)$DCOL\n"
-                    echo -e "   Deployed file: $env_path/$dep_file (modified $PCOL$(date -r $env_path/$dep_file)$DCOL)"
-                    echo -e "   Source file:   $my_root/$src_file (modified $PCOL$(date -r $my_root/$src_file)$DCOL)"
-                    update_cmd="cp $my_root/$src_file $env_path/$dep_file"
+                    echo -e "   Deployed file: $env_path/$dep_file (modified $PCOL$dep_date$DCOL)"
+                    echo -e "   Source file:   $my_root/$src_file (modified $PCOL$src_date$DCOL)"
+                    old_file=$env_path/$dep_file
+                    new_file=$my_root/$src_file
                 fi
+                
+                update_cmd="cp $new_file $old_file"
 
                 if [[ $diff_mode == true ]]; then
                     read -n 1 -s -r -p "   Press any key to display differences..."
 
                     if [[ $dep_file == */main.cfg ]]; then
-                        diff --minimal --color=always -u <(sed '1,/VERSION TRACKING BELOW/d' $my_root/$src_file)    \
-                            <(sed '1,/VERSION TRACKING BELOW/d' $env_path/$dep_file) | less -r
+                        diff --minimal --color=always -u <(sed '1,/VERSION TRACKING BELOW/d' $old_file)    \
+                            <(sed '1,/VERSION TRACKING BELOW/d' $new_file) | less -r
                     else
-                        diff --minimal --color=always -u $my_root/$src_file $env_path/$dep_file | less -r
+                        diff --minimal --color=always -u $old_file $new_file | less -r
                     fi
 
                     echo
