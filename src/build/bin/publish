@@ -10,7 +10,7 @@
 #           shell script. So we must activate in the script!
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   19:51, 10 Nov 2026
+#   Last Revised:   09:26, 18 Nov 2026
 #
 
 
@@ -65,8 +65,11 @@ cat > $SPACKLOT_ENV_PUBLIC/.gitignore << EOF
 .spack-env
 cache
 logs
-modules
 EOF
+
+if [[ ${SPACKLOT_MODULE_VERSION_TRACKING:-false} != true ]]; then
+    echo "modules" >> $SPACKLOT_ENV_PUBLIC/.gitignore
+fi
 
 git add .gitignore
 }
@@ -654,6 +657,18 @@ git add spack.yaml spack.lock config registry .spack-db postprocess includes
 
 if [[ -d util ]]; then
     git add util
+fi
+
+if [[ ${SPACKLOT_MODULE_VERSION_TRACKING:-false} == true ]]; then
+    if [[ -n $SPACKLOT_ROOT_MODULES ]]; then
+        env_dir=environment/$SPACKLOT_MODULE_ENVIRONMENT_NAME
+        env_file=$env_dir/${SPACKLOT_CLUSTER_VERSION}.lua
+
+        mkdir -p modules/$env_dir
+        rsync -a --delete $SPACKLOT_ROOT_MODULES/$SPACKLOT_CLUSTER_VERSION/ modules/$SPACKLOT_CLUSTER_VERSION
+        cp $SPACKLOT_ROOT_MODULES/$env_file modules/$env_file
+        git add modules
+    fi
 fi
 
 if [[ -n $SUDO_USER ]]; then
