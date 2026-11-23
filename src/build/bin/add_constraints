@@ -6,7 +6,7 @@
 #   - to the YAML file.
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   15:47, 08 Oct 2026
+#   Last Revised:   19:06, 22 Nov 2026
 #
 
 function usage {
@@ -325,6 +325,11 @@ if [[ -f $SPACK_ENV/constraints.cfg ]]; then
                 done
                 ;;
             *=*)
+                if [[ $entry == *:* ]]; then
+                    tsecho "Error: Variable definition has ':'; is this a section header missing a '{'?\n       '$entry'"
+                    exit 1
+                fi
+
                 export $entry
                 ;;
             *)

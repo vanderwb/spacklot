@@ -1,0 +1,113 @@
+#!/bin/bash
+#
+#   This script will scan your current packages.cfg manifest and report whether
+#   the current Spack clone can provide newer versions of each package.
+#   Packages that do not rely on a specified version are ignored.
+#
+#   Author:         Brian Vanderwende
+#   Last Revised:   19:32, 22 Nov 2026
+#
+
+function usage {
+cat << EOF
+Usage: $0 [OPTIONS]
+
+This script will scan a package manifest and report whether the current Spack
+clone can provide newer versions of that package.
+
+Options
+    -h, --help              show this help message
+    -v, --verbose           provide additional logging messages
+
+EOF
+exit
+}
+
+if [[ " $@ " == *" -h "* ]] || [[ " $@ " == *" --help "* ]]; then
+    usage
+fi
+
+# Perform common script setup including environment checks
+export my_dir="$( cd "$(dirname "$0")" ; pwd )"
+. $my_dir/tools/init.sh
+
+mode=default
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -b|--brief)
+            mode=brief
+            ;;
+        -v|--verbose)
+            export log_verbosity=$((log_verbosity + 1))
+            ;;
+    esac
+
+    shift
+done
+
+tsecho "Processing manifest file"
+tsecho " >> ${manifest:=$SPACK_ENV/packages.cfg}"
+
+printf "\n | %-25s | %15s | %15s | %15s |\n" "Spec Name" "Current" "Latest" "Preferred"
+echo "-----------------------------------------------------------------------------------"
+
+while read entry; do
+    if [[ $entry == \#* ]]; then
+        continue
+    elif [[ ! $entry =~ ^[^\ ]+: ]]; then
+        # Remove any in-line comments first
+        entry=${entry%%#*}
+
+        # Now remove any optional in-line config
+        entry=${entry%%<*}
+
+        parse_cmd="parse_specs('$(sed "s/'/\\\'/g" <<< $entry)')[0]"
+        spec="$(spack python -c "from spack.cmd import parse_specs; print($parse_cmd)")"
+
+        if [[ ${spec%% *} == *@* ]]; then
+            spec_name=${spec%%@*}
+            spec_version=$(sed -n 's/[^@]*@\([^ +~]*\).*/\1/p' <<< $spec)
+
+            if [[ " $specs_done " == *" $spec_name "* ]]; then
+                continue
+            fi
+
+            read preferred safe < <(spack info --no-variants $spec_name | awk '
+			    /^Preferred versions?:/ { sec="p"; next }
+			    /^Safe versions?:/      { sec="s"; next }
+			    /^[^ ]|^$/              { sec="" }
+			    sec=="p" && !p && NF                { p=$1 }
+			    sec=="s" && !s && NF && !/\[git\]/  { s=$1 }
+			    END { print p, s }
+			')
+
+            spec_sub_version=$spec_version
+            safe_sub_version=$safe
+            entry_printed=false
+
+            while [[ $spec_sub_version == *.* ]] && [[ $safe_sub_version == *.* ]]; do
+                if [[ ${spec_sub_version%%.*} -lt ${safe_sub_version%%.*} ]]; then
+                    printf "${GCOL} | %-25s | %15s | %15s | %15s | +${DCOL}\n" $spec_name $spec_version $safe $preferred
+                    entry_printed=true
+                    break
+                elif [[ ${spec_sub_version%%.*} -gt ${safe_sub_version%%.*} ]]; then
+                    printf "${RCOL} | %-25s | %15s | %15s | %15s | ?${DCOL}\n" $spec_name $spec_version $safe $preferred
+                    entry_printed=true
+                    break
+                else
+                    spec_sub_version=${spec_sub_version#*.}
+                    safe_sub_version=${safe_sub_version#*.}
+                fi
+            done
+
+            if [[ $entry_printed == false ]] && [[ $mode != brief ]]; then
+                printf " | %-25s | %15s | %15s | %15s |\n" $spec_name $spec_version $safe $preferred
+            fi
+
+            specs_done="$specs_done $spec_name"
+		fi
+    fi
+done < <(awk 'NF' $manifest)
+
+echo

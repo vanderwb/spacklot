@@ -8,7 +8,7 @@
 #           and any other packages that need it
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   15:53, 09 Oct 2026
+#   Last Revised:   19:32, 22 Nov 2026
 #
 
 
@@ -85,7 +85,7 @@ The following options are supported by default, section, and package config:
 The following options are supported by section and package config:
 
     access      - How to we want users to access the package? (default = module)
-                  
+
                   Options:
                   module - create a module and don't dictate placement
                   core - create a module and force it to be in Core
@@ -127,7 +127,7 @@ The following options are supported by section and package config:
 
     host        - Only build the indicated package(s) if SPACKLOT_CLUSTER matches
                   the given value.
-              
+
                   Ex) paraview <host:casper>
 
     gpu         - Only build the indicated package(s) if SPACKLOT_GPU_TYPE
@@ -156,7 +156,7 @@ The following options are supported by section and package config:
                   indicate whether we want to register the package as a compiler.
                   If "replace", an existing compiler definition is clobbered.
                   [yes, no, replace]
-                  
+
                   Ex) nvhpc <type:compiler> <register:no>
 
     trust       - If set to "no", tell Spack to skip checksum testing
@@ -165,7 +165,7 @@ The following options are supported by section and package config:
     type        - Specifies a special package type [compiler, mpi]
 
 The following options are only supported on individual packages:
-    
+
     hash_ref    - Create a label to reference the computed hash of this spec in
                   other, subsequent specs.
 
@@ -177,13 +177,13 @@ The following options are only supported on individual packages:
                   something you want to impose manually.
 
                   Ex) vim <match:vr3jck2ycgrur37q7xs2ca4eraua3ish>
-    
+
     spec_ref    - Create a label to reference this spec in other, subsequent
                   specs.
 
                   Ex) hdf5 <spec_ref:HDF5>
                       netcdf-c ^%HDF%
-    
+
     toolchain   - Compilers need toolchains defined so that they can be used
                   consistently across all languages. When specified, this option
                   creates a toolchain for this compiler with the given name.
@@ -483,8 +483,11 @@ function prepare_spec {
         fi
     fi
 
-    spec="$(sed -r "s/@%SYS%/@${sys_gcc}/g" <<< "$spec")"
-    spec="$(sed -r "s/%SYS%/%gcc@${sys_gcc}/g" <<< "$spec")"
+    spec="$(sed -r "s/@%SYS%/@${SPACKLOT_SYSTEM_GCC#*@}/g" <<< "$spec")"
+    spec="$(sed -r "s/%SYS%/%$SPACKLOT_SYSTEM_GCC/g" <<< "$spec")"
+
+    spec="$(sed -r "s/@%CORE%/@${SPACKLOT_CORE_GCC#*@}/g" <<< "$spec")"
+    spec="$(sed -r "s/%CORE%/%$SPACKLOT_CORE_GCC/g" <<< "$spec")"
 
     # Substitute compiler/mpi-specific modifier flags
     for mod_type in $comp ${comp%@*} $mpi ${mpi%@*}; do
@@ -540,7 +543,9 @@ function prepare_spec {
     fi
 
     if [[ -n ${config[toolchain]} ]]; then
-        config[toolchain]="$(sed -r "s/%SYS%/${sys_gcc//.}/g" <<< "${config[toolchain]}")"
+        config[toolchain]="$(sed -r "s/%SYS%/${SPACKLOT_SYSTEM_GCC//.}/g" <<< "${config[toolchain]}")"
+        config[toolchain]="$(sed -r "s/%CORE%/${SPACKLOT_CORE_GCC//.}/g" <<< "${config[toolchain]}")"
+        config[toolchain]="$(sed "s/@/-/g" <<< "${config[toolchain]}")"
     fi
 
     if [[ ${#queue_config[@]} -gt 0 ]] && [[ $start_installs != true ]]; then
@@ -1295,7 +1300,6 @@ fi
 
 # Detect available compiler information
 tsecho "Inspecting currently available compilers"
-sys_gcc=$(gcc -v |& grep "gcc version" | cut -d' ' -f3)
 current_comps=$(spack compiler list --scope env:$SPACK_ENV | grep '@' | awk '{print $NF}')
 external_comps=$(grep '\[e\]' <<< $current_comps | awk '{print $NF}')
 current_comps=$(awk '{print $NF}' <<< $current_comps)
@@ -1401,8 +1405,8 @@ Spack install tasks = ${num_tasks:=1}
 Build jobs per task = $build_jobs
 Build host(s)       = ${build_hosts[@]}
 
-System GCC          = gcc@$sys_gcc
-Stack Core GCC      = ${SPACKLOT_CORE_GCC:=gcc@$sys_gcc}
+System GCC          = $SPACKLOT_SYSTEM_GCC
+Stack Core GCC      = ${SPACKLOT_CORE_GCC:=$SPACKLOT_SYSTEM_GCC}
 Concurrent specs    = ${package_limit/-1/unlimited}
 Log verbosity       = ${log_verbosity:-0}
 
