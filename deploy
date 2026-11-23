@@ -1,11 +1,12 @@
 #!/bin/bash
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   18:57, 22 Nov 2026
+#   Last Revised:   15:24, 23 Nov 2026
 #
 
 set -e
 export SPACKLOT_DIR="$( cd "$(dirname "$0")" ; pwd )"
+export SPACKLOT_DEPLOYMENT_USER=$(whoami)
 export SPACKLOT_DEPLOYMENT_TIME=$(date +%y%m%dT%H%M)
 export SPACKLOT_DEPLOYMENT_TYPE=testing
 export SPACK_DISABLE_LOCAL_CONFIG=true
@@ -52,9 +53,9 @@ exit ${1:-0}
 function export_gpg_key {
     echo
     tsecho "Exporting new GPG key to $SPACKLOT_KEY_DIRECTORY ..."
-    spack gpg export $SPACKLOT_KEY_DIRECTORY/${key_user}-key.pub
-    spack gpg export --secret $SPACKLOT_KEY_DIRECTORY/${key_user}-key.priv
-    chmod 640 $SPACKLOT_KEY_DIRECTORY/${key_user}-key.*
+    spack gpg export $SPACKLOT_KEY_DIRECTORY/${SPACKLOT_DEPLOYMENT_USER}-key.pub
+    spack gpg export --secret $SPACKLOT_KEY_DIRECTORY/${SPACKLOT_DEPLOYMENT_USER}-key.priv
+    chmod 640 $SPACKLOT_KEY_DIRECTORY/${SPACKLOT_DEPLOYMENT_USER}-key.*
     echo
 }
 
@@ -69,7 +70,6 @@ export SPACKLOT_SYSTEM_GCC=gcc@$(/usr/bin/gcc -dumpfullversion)
 # Handle arguments
 user_args=( "$@" )
 gpg_opt=auto
-key_user=$(whoami)
 
 while [[ $# -gt 0 ]]; do
     key="$1"
@@ -168,7 +168,7 @@ for component in main.cfg spack.yaml; do
 done
 
 if [[ $SPACKLOT_DEPLOYMENT_TYPE == production ]]; then
-    if [[ $key_user != $SPACKLOT_PRODUCTION_USER ]]; then
+    if [[ $SPACKLOT_DEPLOYMENT_USER != $SPACKLOT_PRODUCTION_USER ]]; then
         tsecho "Error: cannot create production deployment as $my_user"
         exit 1
     fi
@@ -213,8 +213,8 @@ if [[ ! $gpg_opt =~ (auto|new|none) ]]; then
         gpg_key=$gpg_opt
     fi
 elif [[ $gpg_opt == auto ]]; then
-    if [[ -f $SPACKLOT_KEY_DIRECTORY/${key_user}-key.priv ]]; then
-        gpg_key=$SPACKLOT_KEY_DIRECTORY/${key_user}-key.priv
+    if [[ -f $SPACKLOT_KEY_DIRECTORY/${SPACKLOT_DEPLOYMENT_USER}-key.priv ]]; then
+        gpg_key=$SPACKLOT_KEY_DIRECTORY/${SPACKLOT_DEPLOYMENT_USER}-key.priv
     else
         gpg_opt=new
     fi
@@ -358,25 +358,25 @@ if [[ $SPACKLOT_ROOT != $spack_clone_path ]]; then
     # Create trusted GPG key in spack install
     if [[ ! $skip_steps =~ " "(keys|all)" "  ]]; then
         if [[ $gpg_opt == new ]]; then
-            if [[ $key_user == $SPACKLOT_PRODUCTION_USER ]]; then
+            if [[ $SPACKLOT_DEPLOYMENT_USER == $SPACKLOT_PRODUCTION_USER ]]; then
                 key_person="$SPACKLOT_PRODUCTION_USER_NAME"
                 key_email=$SPACKLOT_PRODUCTION_USER_EMAIL
             else
-                key_person="$(getent passwd $key_user | awk -F[,:] '{ print $5 }')"
+                key_person="$(getent passwd $SPACKLOT_DEPLOYMENT_USER | awk -F[,:] '{ print $5 }')"
                 key_email=$SPACKLOT_USER_EMAIL
             fi
 
             tsecho "Creating trusted GPG key for build cache creation"
-            spack gpg create "${key_person:-$key_user}" "<${key_email:-$(printf "%s@%s" $key_user $(hostname -f))}>"
+            spack gpg create "${key_person:-$SPACKLOT_DEPLOYMENT_USER}" "<${key_email:-$(printf "%s@%s" $SPACKLOT_DEPLOYMENT_USER $(hostname -f))}>"
 
-            if [[ -f $SPACKLOT_KEY_DIRECTORY/${key_user}-key.priv ]]; then
+            if [[ -f $SPACKLOT_KEY_DIRECTORY/${SPACKLOT_DEPLOYMENT_USER}-key.priv ]]; then
                 read -p "GPG key already exists. Overwrite (y/N)? " clobber_key
                 clobber_key=${clobber_key:-no}
 
                 if [[ yes == ${clobber_key,,}* ]]; then
                     echo "Backing up old key ..."
                     mkdir $SPACKLOT_KEY_DIRECTORY/backup.$SPACKLOT_DEPLOYMENT_TIME
-                    mv $SPACKLOT_KEY_DIRECTORY/${key_user}-key.* $SPACKLOT_KEY_DIRECTORY/backup.$SPACKLOT_DEPLOYMENT_TIME
+                    mv $SPACKLOT_KEY_DIRECTORY/${SPACKLOT_DEPLOYMENT_USER}-key.* $SPACKLOT_KEY_DIRECTORY/backup.$SPACKLOT_DEPLOYMENT_TIME
                     export_gpg_key
                 fi
             else
@@ -425,7 +425,7 @@ cp -r templates $SPACKLOT_ENV_BUILD
 cat > $SPACKLOT_ENV_BUILD/main.cfg << EOF
 SPACKLOT_DEPLOYMENT_TYPE=$SPACKLOT_DEPLOYMENT_TYPE
 SPACKLOT_DEPLOYMENT_COMMIT=$(git rev-parse HEAD)
-SPACKLOT_DEPLOYMENT_USER=$key_user
+SPACKLOT_DEPLOYMENT_USER=$SPACKLOT_DEPLOYMENT_USER
 SPACKLOT_PRODUCTION_USER=$SPACKLOT_PRODUCTION_USER
 SPACKLOT_COLLECTION=$SPACKLOT_COLLECTION
 
