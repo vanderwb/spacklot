@@ -5,7 +5,7 @@
 #   Packages that do not rely on a specified version are ignored.
 #
 #   Author:         Brian Vanderwende
-#   Last Revised:   19:32, 22 Nov 2026
+#   Last Revised:   19:33, 23 Nov 2026
 #
 
 function usage {
@@ -61,6 +61,10 @@ while read entry; do
 
         # Now remove any optional in-line config
         entry=${entry%%<*}
+
+        # Replace any sigils found
+        entry="$(sed -r "s/@%SYS%/@${SPACKLOT_SYSTEM_GCC#*@}/g" <<< "$entry")"
+        entry="$(sed -r "s/@%CORE%/@${SPACKLOT_CORE_GCC#*@}/g" <<< "$entry")"
 
         parse_cmd="parse_specs('$(sed "s/'/\\\'/g" <<< $entry)')[0]"
         spec="$(spack python -c "from spack.cmd import parse_specs; print($parse_cmd)")"
